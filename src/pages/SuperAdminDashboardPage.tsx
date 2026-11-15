@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Building2, CreditCard, Globe, LayoutDashboard, ShieldCheck, Users } from 'lucide-react';
+import { Activity, Building2, CreditCard, Eye, Globe, LayoutDashboard, ShieldCheck, Users } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { formatDateBS, formatNPR, toNepaliDigits } from '../lib/bs-date';
@@ -34,6 +34,7 @@ export function SuperAdminDashboardPage() {
     branding: Record<string, unknown>;
   }>({ categories: [], products: [], branding: {} });
   const [newCat, setNewCat] = useState({ nameNe: '', nameEn: '' });
+  const [productFilter, setProductFilter] = useState('');
   const [usersList, setUsersList] = useState<Array<Record<string, unknown>>>([]);
   const [logs, setLogs] = useState<{
     auditLogs: Array<Record<string, unknown>>;
@@ -95,7 +96,7 @@ export function SuperAdminDashboardPage() {
     { id: 'overview', ne: 'प्लेटफर्म अवलोकन', en: 'Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
     { id: 'cooperatives', ne: 'सहकारी स्वीकृति र प्रशासन', en: 'Cooperatives', icon: <Building2 className="w-4 h-4" /> },
     { id: 'plans', ne: 'सदस्यता योजना र भुक्तानी', en: 'Subscriptions', icon: <CreditCard className="w-4 h-4" /> },
-    { id: 'marketplace', ne: 'बजार र उत्पादन नियन्त्रण', en: 'Marketplace', icon: <Globe className="w-4 h-4" /> },
+    { id: 'marketplace', ne: 'प्लेटफर्म र अनुगमन', en: 'Platform & Monitor', icon: <Globe className="w-4 h-4" /> },
     { id: 'users', ne: 'प्रयोगकर्ता व्यवस्थापन', en: 'Users & Roles', icon: <Users className="w-4 h-4" /> },
     { id: 'logs', ne: 'अडिट, SMS र सहायता', en: 'Logs & Support', icon: <Activity className="w-4 h-4" /> },
   ];
@@ -479,54 +480,104 @@ export function SuperAdminDashboardPage() {
               <Button type="submit">{lang === 'ne' ? 'वर्ग थप्नुहोस्' : 'Add Global Category'}</Button>
             </form>
 
-            <div className="bg-white border border-[#E5E2DC] rounded-xl overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-[#E5E2DC] text-left text-[#78716C]">
-                    <th className="p-3">{lang === 'ne' ? 'उत्पादन' : 'Product'}</th>
-                    <th className="p-3">{lang === 'ne' ? 'सहकारी' : 'Cooperative'}</th>
-                    <th className="p-3 text-right">{lang === 'ne' ? 'मूल्य' : 'Price'}</th>
-                    <th className="p-3 text-right">{lang === 'ne' ? 'नियन्त्रण' : 'Moderation'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#F3F1EC]">
-                  {marketCtrl.products.map((p) => (
-                    <tr key={String(p.id)}>
-                      <td className="p-3 font-medium">{lang === 'ne' ? String(p.name_ne) : String(p.name_en)}</td>
-                      <td className="p-3 text-[#57534E]">{lang === 'ne' ? String(p.cooperative_name_ne) : String(p.cooperative_name_en)}</td>
-                      <td className="p-3 text-right tabular-nums">{formatNPR(Number(p.price_npr), lang)}</td>
-                      <td className="p-3 text-right space-x-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={async () => {
-                            await apiFetch(`/api/admin/products/${p.id}/moderate`, {
-                              method: 'PATCH',
-                              body: JSON.stringify({ isPlatformFeatured: !p.is_platform_featured }),
-                            });
-                            loadTab('marketplace');
-                          }}
-                        >
-                          {p.is_platform_featured ? 'Unfeature' : 'Feature'}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant={p.is_prohibited ? 'default' : 'outline'}
-                          onClick={async () => {
-                            await apiFetch(`/api/admin/products/${p.id}/moderate`, {
-                              method: 'PATCH',
-                              body: JSON.stringify({ isProhibited: !p.is_prohibited }),
-                            });
-                            loadTab('marketplace');
-                          }}
-                        >
-                          {p.is_prohibited ? 'Allow' : 'Prohibit'}
-                        </Button>
-                      </td>
+            <div className="bg-white border border-[#E5E2DC] rounded-xl overflow-hidden">
+              <div className="p-4 border-b border-[#E5E2DC] flex flex-wrap items-center justify-between gap-3 bg-[#FAF9F6]">
+                <div className="space-y-1">
+                  <h2 className="font-semibold text-sm text-[#0F172A] flex items-center gap-2">
+                    <Eye className="w-4 h-4 text-[#57534E]" />
+                    {lang === 'ne' ? 'सहकारी उत्पादन अनुगमन (पढ्न मात्र)' : 'Cooperative Products Monitor (Read-Only)'}
+                  </h2>
+                  <p className="text-xs text-[#57534E]">
+                    {lang === 'ne'
+                      ? 'उत्पादन थप्ने, सम्पादन, मूल्य निर्धारण, स्टक र उपलब्धताको सम्पूर्ण व्यवस्थापन सम्बन्धित सहकारी पसलले मात्र गर्दछ।'
+                      : 'Adding, editing, pricing, stock updates, availability, and product details are managed exclusively by each Cooperative Store.'}
+                  </p>
+                </div>
+                <Input
+                  placeholder={lang === 'ne' ? 'उत्पादन, SKU वा सहकारी खोज्नुहोस्...' : 'Filter by product, SKU, or cooperative...'}
+                  value={productFilter}
+                  onChange={(e) => setProductFilter(e.target.value)}
+                  className="max-w-xs h-9 text-xs bg-white"
+                />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-[#E5E2DC] text-left text-[#78716C]">
+                      <th className="p-3">{lang === 'ne' ? 'उत्पादन' : 'Product'}</th>
+                      <th className="p-3">{lang === 'ne' ? 'सहकारी पसल' : 'Cooperative Store'}</th>
+                      <th className="p-3">{lang === 'ne' ? 'वर्ग' : 'Category'}</th>
+                      <th className="p-3 text-right">{lang === 'ne' ? 'मूल्य' : 'Price'}</th>
+                      <th className="p-3 text-right">{lang === 'ne' ? 'स्टक' : 'Stock'}</th>
+                      <th className="p-3">{lang === 'ne' ? 'उपलब्धता' : 'Availability'}</th>
+                      <th className="p-3">{lang === 'ne' ? 'स्थिति' : 'Status'}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#F3F1EC]">
+                    {marketCtrl.products
+                      .filter((p) => {
+                        const q = productFilter.trim().toLowerCase();
+                        if (!q) return true;
+                        return [p.name_ne, p.name_en, p.sku, p.cooperative_name_ne, p.cooperative_name_en]
+                          .map((v) => String(v || '').toLowerCase())
+                          .some((v) => v.includes(q));
+                      })
+                      .map((p) => (
+                        <tr key={String(p.id)}>
+                          <td className="p-3">
+                            <p className="font-medium text-[#0F172A]">
+                              {lang === 'ne' ? String(p.name_ne) : String(p.name_en)}
+                            </p>
+                            <p className="font-mono text-[11px] text-[#78716C]">{String(p.sku)}</p>
+                          </td>
+                          <td className="p-3 text-[#57534E]">
+                            {p.cooperative_slug ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/store/${String(p.cooperative_slug)}`)}
+                                className="text-left hover:underline text-[#0F172A] font-medium cursor-pointer"
+                              >
+                                {lang === 'ne' ? String(p.cooperative_name_ne || '') : String(p.cooperative_name_en || '')}
+                              </button>
+                            ) : (
+                              <span>
+                                {lang === 'ne' ? String(p.cooperative_name_ne || '') : String(p.cooperative_name_en || '')}
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3 text-[#57534E]">
+                            {lang === 'ne'
+                              ? String(p.category_name_ne || '-')
+                              : String(p.category_name_en || '-')}
+                          </td>
+                          <td className="p-3 text-right tabular-nums">
+                            {p.discount_price_npr ? (
+                              <div>
+                                <span className="font-semibold text-[#0F172A]">
+                                  {formatNPR(Number(p.discount_price_npr), lang)}
+                                </span>
+                                <span className="block text-[11px] line-through text-[#78716C]">
+                                  {formatNPR(Number(p.price_npr), lang)}
+                                </span>
+                              </div>
+                            ) : (
+                              formatNPR(Number(p.price_npr), lang)
+                            )}
+                          </td>
+                          <td className="p-3 text-right tabular-nums font-medium">
+                            {lang === 'ne' ? toNepaliDigits(Number(p.stock_quantity || 0)) : Number(p.stock_quantity || 0)}
+                          </td>
+                          <td className="p-3 text-[#57534E]">
+                            {labelFor(STATUS_LABELS, String(p.availability_status || 'in_stock'), lang)}
+                          </td>
+                          <td className="p-3 font-medium">
+                            {labelFor(STATUS_LABELS, String(p.status || 'draft'), lang)}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

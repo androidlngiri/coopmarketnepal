@@ -253,27 +253,31 @@ adminRouter.post('/subscription-payments/:id/verify', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Global Marketplace & Product Moderation
+// Platform Settings, Global Categories & Read-Only Product Monitoring
 adminRouter.get('/marketplace-controls', async (_req, res) => {
   const sb = requireSupabaseAdmin();
   const [catsRes, prodsRes, brandRes] = await Promise.all([
     sb.from('global_categories').select('*').order('sort_order', { ascending: true }),
     sb
       .from('products')
-      .select('*, cooperatives (name_ne, name_en), product_images (image_url, is_primary)')
+      .select('*, cooperatives (name_ne, name_en, slug), global_categories (name_ne, name_en), product_images (image_url, is_primary)')
       .order('created_at', { ascending: false })
-      .limit(100),
+      .limit(200),
     sb.from('platform_settings').select('value_json').eq('key', 'branding').maybeSingle(),
   ]);
 
   const products = (prodsRes.data || []).map((p: Record<string, unknown>) => {
     const coop = (Array.isArray(p.cooperatives) ? p.cooperatives[0] : p.cooperatives) as Record<string, unknown> | null;
+    const cat = (Array.isArray(p.global_categories) ? p.global_categories[0] : p.global_categories) as Record<string, unknown> | null;
     const imgs = (p.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
-    const { cooperatives: _c, product_images: _pi, ...rest } = p;
+    const { cooperatives: _c, global_categories: _gc, product_images: _pi, ...rest } = p;
     return {
       ...rest,
       cooperative_name_ne: coop?.name_ne ?? null,
       cooperative_name_en: coop?.name_en ?? null,
+      cooperative_slug: coop?.slug ?? null,
+      category_name_ne: cat?.name_ne ?? null,
+      category_name_en: cat?.name_en ?? null,
       image_url: imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null,
     };
   });
@@ -311,26 +315,10 @@ adminRouter.post('/categories', async (req, res) => {
   res.status(201).json({ id: data.id });
 });
 
-adminRouter.patch('/products/:id/moderate', async (req, res) => {
-  const { isProhibited, prohibitionReason, isPlatformFeatured } = req.body || {};
-  const sb = requireSupabaseAdmin();
-  const updatePayload: Record<string, unknown> = {};
-  if (isProhibited !== undefined) updatePayload.is_prohibited = Boolean(isProhibited);
-  if (prohibitionReason !== undefined) updatePayload.prohibition_reason = prohibitionReason;
-  if (isPlatformFeatured !== undefined) updatePayload.is_platform_featured = Boolean(isPlatformFeatured);
-
-  await sb.from('products').update(updatePayload).eq('id', req.params.id);
-
-  await writeAuditLog({
-    actorUserId: req.authUser!.id,
-    actorRole: 'super_admin',
-    action: 'product_moderated',
-    entityType: 'product',
-    entityId: req.params.id,
-    metadata: { isProhibited, isPlatformFeatured },
-    ipAddress: req.ip,
+adminRouter.all('/products*', (_req, res) => {
+  return res.status(403).json({
+    error: 'व्यक्तिगत उत्पादन व्यवस्थापन सम्बन्धित सहकारी पसलबाट मात्र गर्न मिल्छ (Super Admin has read-only product monitoring).',
   });
-  res.json({ ok: true });
 });
 
 adminRouter.put('/settings/branding', async (req, res) => {

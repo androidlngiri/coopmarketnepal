@@ -546,6 +546,7 @@ CREATE TABLE IF NOT EXISTS public.platform_settings (
   updated_by UUID REFERENCES public.profiles(id),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
 -- ============================================================================
 -- Sahakari Bazar (सहकारी बजार) — Migration 0002: Row Level Security (RLS)
 -- Mandatory Multi-Tenant Isolation & RBAC Enforcement
@@ -775,6 +776,7 @@ RETURNS TABLE (
   WHERE o.order_number = p_order_number
     AND o.guest_access_token = p_token;
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
+
 -- ============================================================================
 -- Sahakari Bazar (सहकारी बजार) — Migration 0003: Supabase Storage Buckets & Policies
 -- ============================================================================
@@ -808,6 +810,7 @@ CREATE POLICY "private_read_coop_docs" ON storage.objects FOR SELECT
       OR public.is_super_admin()
     )
   );
+
 -- ============================================================================
 -- Sahakari Bazar (सहकारी बजार) — Migration 0004:
 -- Runtime Parity Tables, Complete RLS Policies & Transactional RPC Functions
@@ -1689,6 +1692,36 @@ AS $$
     ), 0))
   );
 $$;
+
+-- ============================================================================
+-- Sahakari Bazar (सहकारी बजार) — Migration 0005:
+-- Enforce Read-Only Super Admin Product Monitoring & Cooperative-Only Writes
+-- ============================================================================
+
+-- Products: Super Admin keeps SELECT via products_public_read,
+-- but ONLY owning cooperative staff with 'manage_products' can write.
+DROP POLICY IF EXISTS "products_tenant_manage" ON public.products;
+CREATE POLICY "products_tenant_manage" ON public.products FOR ALL
+  USING (public.has_coop_permission(cooperative_id, 'manage_products'))
+  WITH CHECK (public.has_coop_permission(cooperative_id, 'manage_products'));
+
+-- Product Images: Cooperative-only writes; public/admin SELECT preserved.
+DROP POLICY IF EXISTS "product_images_tenant_manage" ON public.product_images;
+CREATE POLICY "product_images_tenant_manage" ON public.product_images FOR ALL
+  USING (public.has_coop_permission(cooperative_id, 'manage_products'))
+  WITH CHECK (public.has_coop_permission(cooperative_id, 'manage_products'));
+
+-- Cooperative Store Categories: Cooperative-only writes; public/admin SELECT preserved.
+DROP POLICY IF EXISTS "coop_cats_manage" ON public.cooperative_categories;
+CREATE POLICY "coop_cats_manage" ON public.cooperative_categories FOR ALL
+  USING (public.has_coop_permission(cooperative_id, 'manage_products'))
+  WITH CHECK (public.has_coop_permission(cooperative_id, 'manage_products'));
+
+-- Inventory Movements: Cooperative-only inserts; Super Admin retains read-only audit visibility.
+DROP POLICY IF EXISTS "inventory_tenant_insert" ON public.inventory_movements;
+CREATE POLICY "inventory_tenant_insert" ON public.inventory_movements FOR INSERT
+  WITH CHECK (public.has_coop_permission(cooperative_id, 'manage_inventory'));
+
 -- ============================================================================
 -- Sahakari Bazar (सहकारी बजार) — Idempotent Production Seed Data
 -- ============================================================================
@@ -1711,3 +1744,4 @@ VALUES
   ('indigenous-himalayan', 'रैथाने तथा हिमाली उत्पादन', 'Indigenous & Himalayan', 5),
   ('daily-essentials', 'दैनिक उपभोग्य वस्तु', 'Daily Essentials', 6)
 ON CONFLICT (slug) DO NOTHING;
+

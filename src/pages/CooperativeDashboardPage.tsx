@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Package,
   Paintbrush,
+  Pencil,
   ShoppingCart,
   Tag,
   Truck,
@@ -62,14 +63,39 @@ export function CooperativeDashboardPage() {
     unitLabelNe: 'के.जी.',
     unitLabelEn: 'kg',
     stockQuantity: '10',
+    lowStockThreshold: '5',
     globalCategoryId: '',
+    coopCategoryId: '',
     originDistrict: '',
     producerName: '',
     descriptionNe: '',
     descriptionEn: '',
     status: 'draft',
+    isFeatured: false,
     imageBase64: '',
   });
+  const [editingProd, setEditingProd] = useState<{
+    id: string;
+    nameNe: string;
+    nameEn: string;
+    sku: string;
+    priceNpr: string;
+    discountPriceNpr: string;
+    unitLabelNe: string;
+    unitLabelEn: string;
+    globalCategoryId: string;
+    coopCategoryId: string;
+    originDistrict: string;
+    producerName: string;
+    lowStockThreshold: string;
+    availabilityStatus: string;
+    status: string;
+    isFeatured: boolean;
+    descriptionNe: string;
+    descriptionEn: string;
+    imageBase64: string;
+  } | null>(null);
+  const [stockDrafts, setStockDrafts] = useState<Record<string, { delta: string; note: string }>>({});
   const [newCoopCat, setNewCoopCat] = useState({ nameNe: '', nameEn: '' });
 
   // Inventory, Orders, Customers, Reports
@@ -267,6 +293,7 @@ export function CooperativeDashboardPage() {
         priceNpr: Number(newProd.priceNpr),
         discountPriceNpr: newProd.discountPriceNpr ? Number(newProd.discountPriceNpr) : null,
         stockQuantity: Number(newProd.stockQuantity),
+        lowStockThreshold: Number(newProd.lowStockThreshold || 5),
       }),
     });
     if (!res.ok) {
@@ -281,12 +308,74 @@ export function CooperativeDashboardPage() {
       sku: '',
       priceNpr: '',
       discountPriceNpr: '',
+      producerName: '',
       descriptionNe: '',
       descriptionEn: '',
+      isFeatured: false,
       imageBase64: '',
     });
     const prodRes = await apiFetch<{ products: Array<Record<string, unknown>> }>('/api/coop-dashboard/products');
     if (prodRes.ok) setProducts(prodRes.data.products);
+  };
+
+  const handleUpdateProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProd) return;
+    const res = await apiFetch(`/api/coop-dashboard/products/${editingProd.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        nameNe: editingProd.nameNe,
+        nameEn: editingProd.nameEn,
+        sku: editingProd.sku,
+        priceNpr: Number(editingProd.priceNpr),
+        discountPriceNpr: editingProd.discountPriceNpr === '' ? null : Number(editingProd.discountPriceNpr),
+        unitLabelNe: editingProd.unitLabelNe,
+        unitLabelEn: editingProd.unitLabelEn,
+        globalCategoryId: editingProd.globalCategoryId || null,
+        coopCategoryId: editingProd.coopCategoryId || null,
+        originDistrict: editingProd.originDistrict,
+        producerName: editingProd.producerName,
+        lowStockThreshold: Number(editingProd.lowStockThreshold || 5),
+        availabilityStatus: editingProd.availabilityStatus,
+        status: editingProd.status,
+        isFeatured: editingProd.isFeatured,
+        descriptionNe: editingProd.descriptionNe,
+        descriptionEn: editingProd.descriptionEn,
+        imageBase64: editingProd.imageBase64 || undefined,
+      }),
+    });
+    if (!res.ok) {
+      toast.error(res.error || 'उत्पादन अद्यावधिक गर्न सकिएन।');
+      return;
+    }
+    toast.success(lang === 'ne' ? 'उत्पादन विवरण सुरक्षित भयो!' : 'Product updated!');
+    setEditingProd(null);
+    const prodRes = await apiFetch<{ products: Array<Record<string, unknown>> }>('/api/coop-dashboard/products');
+    if (prodRes.ok) setProducts(prodRes.data.products);
+  };
+
+  const startEditingProduct = (p: Record<string, unknown>) => {
+    setEditingProd({
+      id: String(p.id),
+      nameNe: String(p.name_ne || ''),
+      nameEn: String(p.name_en || ''),
+      sku: String(p.sku || ''),
+      priceNpr: String(p.price_npr ?? ''),
+      discountPriceNpr: p.discount_price_npr !== null && p.discount_price_npr !== undefined ? String(p.discount_price_npr) : '',
+      unitLabelNe: String(p.unit_label_ne || 'के.जी.'),
+      unitLabelEn: String(p.unit_label_en || 'kg'),
+      globalCategoryId: String(p.global_category_id || ''),
+      coopCategoryId: String(p.coop_category_id || ''),
+      originDistrict: String(p.origin_district || ''),
+      producerName: String(p.producer_name || ''),
+      lowStockThreshold: String(p.low_stock_threshold ?? '5'),
+      availabilityStatus: String(p.availability_status || 'in_stock'),
+      status: String(p.status || 'draft'),
+      isFeatured: Boolean(p.is_featured),
+      descriptionNe: String(p.description_ne || ''),
+      descriptionEn: String(p.description_en || ''),
+      imageBase64: '',
+    });
   };
 
   const navItems: Array<{ id: CoopTab; ne: string; en: string; icon: React.ReactNode }> = [
@@ -709,12 +798,23 @@ export function CooperativeDashboardPage() {
                 </Select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <Input
                   placeholder={lang === 'ne' ? 'एकाइ (जस्तै: १ के.जी.)' : 'Unit (e.g. 1 kg)'}
                   value={newProd.unitLabelNe}
                   onChange={(e) => setNewProd({ ...newProd, unitLabelNe: e.target.value, unitLabelEn: e.target.value })}
                 />
+                <Select
+                  value={newProd.coopCategoryId}
+                  onChange={(e) => setNewProd({ ...newProd, coopCategoryId: e.target.value })}
+                >
+                  <option value="">{lang === 'ne' ? 'पसल आन्तरिक वर्ग' : 'Store Category (Optional)'}</option>
+                  {coopCats.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {lang === 'ne' ? c.name_ne : c.name_en}
+                    </option>
+                  ))}
+                </Select>
                 <Input
                   placeholder={lang === 'ne' ? 'उत्पादन जिल्ला' : 'Origin District'}
                   value={newProd.originDistrict}
@@ -724,6 +824,28 @@ export function CooperativeDashboardPage() {
                   <option value="draft">{lang === 'ne' ? 'मस्यौदा (Draft)' : 'Draft'}</option>
                   <option value="published">{lang === 'ne' ? 'प्रकाशित (Publish)' : 'Publish'}</option>
                 </Select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+                <Input
+                  placeholder={lang === 'ne' ? 'उत्पादक / कृषक समूह नाम' : 'Producer / Farmer Group'}
+                  value={newProd.producerName}
+                  onChange={(e) => setNewProd({ ...newProd, producerName: e.target.value })}
+                />
+                <Input
+                  type="number"
+                  placeholder={lang === 'ne' ? 'न्यूनतम स्टक चेतावनी (५)' : 'Low Stock Alert Threshold (5)'}
+                  value={newProd.lowStockThreshold}
+                  onChange={(e) => setNewProd({ ...newProd, lowStockThreshold: e.target.value })}
+                />
+                <label className="inline-flex items-center gap-2 text-xs text-[#0F172A]">
+                  <input
+                    type="checkbox"
+                    checked={newProd.isFeatured}
+                    onChange={(e) => setNewProd({ ...newProd, isFeatured: e.target.checked })}
+                  />
+                  <span>{lang === 'ne' ? 'सहकारी पसलमा विशेष उत्पादन बनाउनुहोस्' : 'Feature on Storefront'}</span>
+                </label>
               </div>
 
               <Textarea
@@ -790,6 +912,176 @@ export function CooperativeDashboardPage() {
               </div>
             </div>
 
+            {/* Inline Edit Product Panel */}
+            {editingProd && (
+              <form
+                onSubmit={handleUpdateProduct}
+                className="bg-[#FAF9F6] border-2 border-[#0F172A] rounded-xl p-6 space-y-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="font-semibold text-base text-[#0F172A]">
+                    {lang === 'ne' ? 'उत्पादन विवरण सम्पादन' : 'Edit Product Details'} —{' '}
+                    <span className="font-mono text-xs">{editingProd.sku}</span>
+                  </h3>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setEditingProd(null)}>
+                    {lang === 'ne' ? 'बन्द गर्नुहोस्' : 'Cancel'}
+                  </Button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <Input
+                    required
+                    placeholder={lang === 'ne' ? 'नेपाली नाम *' : 'Nepali Name *'}
+                    value={editingProd.nameNe}
+                    onChange={(e) => setEditingProd({ ...editingProd, nameNe: e.target.value })}
+                  />
+                  <Input
+                    required
+                    placeholder={lang === 'ne' ? 'English Name *' : 'English Name *'}
+                    value={editingProd.nameEn}
+                    onChange={(e) => setEditingProd({ ...editingProd, nameEn: e.target.value })}
+                  />
+                  <Input
+                    required
+                    placeholder="SKU *"
+                    value={editingProd.sku}
+                    onChange={(e) => setEditingProd({ ...editingProd, sku: e.target.value })}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <Input
+                    required
+                    type="number"
+                    placeholder={lang === 'ne' ? 'मूल्य (रु.) *' : 'Price NPR *'}
+                    value={editingProd.priceNpr}
+                    onChange={(e) => setEditingProd({ ...editingProd, priceNpr: e.target.value })}
+                  />
+                  <Input
+                    type="number"
+                    placeholder={lang === 'ne' ? 'छुट मूल्य (रु.)' : 'Discount NPR'}
+                    value={editingProd.discountPriceNpr}
+                    onChange={(e) => setEditingProd({ ...editingProd, discountPriceNpr: e.target.value })}
+                  />
+                  <Input
+                    placeholder={lang === 'ne' ? 'एकाइ (नेपाली)' : 'Unit (Nepali)'}
+                    value={editingProd.unitLabelNe}
+                    onChange={(e) => setEditingProd({ ...editingProd, unitLabelNe: e.target.value })}
+                  />
+                  <Input
+                    placeholder={lang === 'ne' ? 'एकाइ (English)' : 'Unit (English)'}
+                    value={editingProd.unitLabelEn}
+                    onChange={(e) => setEditingProd({ ...editingProd, unitLabelEn: e.target.value })}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <Select
+                    value={editingProd.globalCategoryId}
+                    onChange={(e) => setEditingProd({ ...editingProd, globalCategoryId: e.target.value })}
+                  >
+                    <option value="">{lang === 'ne' ? 'मुख्य वर्ग' : 'Global Category'}</option>
+                    {globalCats.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {lang === 'ne' ? c.name_ne : c.name_en}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={editingProd.coopCategoryId}
+                    onChange={(e) => setEditingProd({ ...editingProd, coopCategoryId: e.target.value })}
+                  >
+                    <option value="">{lang === 'ne' ? 'पसल आन्तरिक वर्ग' : 'Store Category'}</option>
+                    {coopCats.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {lang === 'ne' ? c.name_ne : c.name_en}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={editingProd.availabilityStatus}
+                    onChange={(e) => setEditingProd({ ...editingProd, availabilityStatus: e.target.value })}
+                  >
+                    <option value="in_stock">{labelFor(STATUS_LABELS, 'in_stock', lang)}</option>
+                    <option value="out_of_stock">{labelFor(STATUS_LABELS, 'out_of_stock', lang)}</option>
+                    <option value="preorder">{labelFor(STATUS_LABELS, 'preorder', lang)}</option>
+                    <option value="discontinued">{labelFor(STATUS_LABELS, 'discontinued', lang)}</option>
+                  </Select>
+                  <Select
+                    value={editingProd.status}
+                    onChange={(e) => setEditingProd({ ...editingProd, status: e.target.value })}
+                  >
+                    <option value="draft">{labelFor(STATUS_LABELS, 'draft', lang)}</option>
+                    <option value="published">{labelFor(STATUS_LABELS, 'published', lang)}</option>
+                    <option value="archived">{labelFor(STATUS_LABELS, 'archived', lang)}</option>
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-center">
+                  <Input
+                    placeholder={lang === 'ne' ? 'उत्पादन जिल्ला' : 'Origin District'}
+                    value={editingProd.originDistrict}
+                    onChange={(e) => setEditingProd({ ...editingProd, originDistrict: e.target.value })}
+                  />
+                  <Input
+                    placeholder={lang === 'ne' ? 'उत्पादक / कृषक समूह' : 'Producer Name'}
+                    value={editingProd.producerName}
+                    onChange={(e) => setEditingProd({ ...editingProd, producerName: e.target.value })}
+                  />
+                  <Input
+                    type="number"
+                    placeholder={lang === 'ne' ? 'न्यूनतम स्टक चेतावनी' : 'Low Stock Threshold'}
+                    value={editingProd.lowStockThreshold}
+                    onChange={(e) => setEditingProd({ ...editingProd, lowStockThreshold: e.target.value })}
+                  />
+                  <label className="inline-flex items-center gap-2 text-xs text-[#0F172A]">
+                    <input
+                      type="checkbox"
+                      checked={editingProd.isFeatured}
+                      onChange={(e) => setEditingProd({ ...editingProd, isFeatured: e.target.checked })}
+                    />
+                    <span>{lang === 'ne' ? 'विशेष उत्पादन (Store Featured)' : 'Feature in Storefront'}</span>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Textarea
+                    placeholder={lang === 'ne' ? 'विवरण (नेपाली)' : 'Description (Nepali)'}
+                    value={editingProd.descriptionNe}
+                    onChange={(e) => setEditingProd({ ...editingProd, descriptionNe: e.target.value })}
+                  />
+                  <Textarea
+                    placeholder={lang === 'ne' ? 'विवरण (English)' : 'Description (English)'}
+                    value={editingProd.descriptionEn}
+                    onChange={(e) => setEditingProd({ ...editingProd, descriptionEn: e.target.value })}
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs text-[#57534E]">
+                    <span>{lang === 'ne' ? 'नयाँ फोटो (ऐच्छिक):' : 'Replace Photo (Optional):'}</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file || !editingProd) return;
+                        const reader = new FileReader();
+                        reader.onload = () => setEditingProd({ ...editingProd, imageBase64: String(reader.result || '') });
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" onClick={() => setEditingProd(null)}>
+                      {lang === 'ne' ? 'रद्द' : 'Cancel'}
+                    </Button>
+                    <Button type="submit">{lang === 'ne' ? 'परिवर्तन सुरक्षित गर्नुहोस्' : 'Save Changes'}</Button>
+                  </div>
+                </div>
+              </form>
+            )}
+
             {/* Product List Table */}
             <div className="bg-white border border-[#E5E2DC] rounded-xl overflow-x-auto">
               <table className="w-full text-sm">
@@ -799,48 +1091,76 @@ export function CooperativeDashboardPage() {
                     <th className="p-3">SKU</th>
                     <th className="p-3 text-right">{lang === 'ne' ? 'मूल्य' : 'Price'}</th>
                     <th className="p-3 text-right">{lang === 'ne' ? 'स्टक' : 'Stock'}</th>
+                    <th className="p-3">{lang === 'ne' ? 'उपलब्धता' : 'Availability'}</th>
                     <th className="p-3">{lang === 'ne' ? 'स्थिति' : 'Status'}</th>
-                    <th className="p-3 text-right">{lang === 'ne' ? 'कार्य' : 'Action'}</th>
+                    <th className="p-3 text-right">{lang === 'ne' ? 'कार्य' : 'Actions'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F3F1EC]">
                   {products.map((p) => (
                     <tr key={String(p.id)}>
                       <td className="p-3 font-medium text-[#0F172A]">
-                        {lang === 'ne' ? String(p.name_ne) : String(p.name_en)}
+                        <p>{lang === 'ne' ? String(p.name_ne) : String(p.name_en)}</p>
+                        <p className="text-xs text-[#78716C]">
+                          {lang === 'ne' ? String(p.unit_label_ne || '') : String(p.unit_label_en || '')}
+                        </p>
                       </td>
                       <td className="p-3 font-mono text-xs text-[#57534E]">{String(p.sku)}</td>
-                      <td className="p-3 text-right tabular-nums">{formatNPR(Number(p.price_npr), lang)}</td>
-                      <td className="p-3 text-right tabular-nums">{String(p.stock_quantity)}</td>
+                      <td className="p-3 text-right tabular-nums">
+                        {p.discount_price_npr ? (
+                          <div>
+                            <span className="font-semibold text-[#0F172A]">
+                              {formatNPR(Number(p.discount_price_npr), lang)}
+                            </span>
+                            <span className="block text-xs line-through text-[#78716C]">
+                              {formatNPR(Number(p.price_npr), lang)}
+                            </span>
+                          </div>
+                        ) : (
+                          formatNPR(Number(p.price_npr), lang)
+                        )}
+                      </td>
+                      <td className="p-3 text-right tabular-nums">
+                        {lang === 'ne' ? toNepaliDigits(Number(p.stock_quantity || 0)) : String(p.stock_quantity)}
+                      </td>
+                      <td className="p-3 text-xs text-[#57534E]">
+                        {labelFor(STATUS_LABELS, String(p.availability_status || 'in_stock'), lang)}
+                      </td>
                       <td className="p-3 text-xs">{labelFor(STATUS_LABELS, String(p.status), lang)}</td>
                       <td className="p-3 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={async () => {
-                            const nextStatus = p.status === 'published' ? 'draft' : 'published';
-                            const r = await apiFetch(`/api/coop-dashboard/products/${p.id}`, {
-                              method: 'PATCH',
-                              body: JSON.stringify({ status: nextStatus }),
-                            });
-                            if (!r.ok) {
-                              toast.error(r.error || 'स्थिति परिवर्तन असफल');
-                              return;
-                            }
-                            const ref = await apiFetch<{ products: Array<Record<string, unknown>> }>(
-                              '/api/coop-dashboard/products'
-                            );
-                            if (ref.ok) setProducts(ref.data.products);
-                          }}
-                        >
-                          {p.status === 'published'
-                            ? lang === 'ne'
-                              ? 'मस्यौदामा सार्नुहोस्'
-                              : 'Unpublish'
-                            : lang === 'ne'
-                            ? 'प्रकाशित'
-                            : 'Publish'}
-                        </Button>
+                        <div className="inline-flex items-center gap-1.5">
+                          <Button size="sm" variant="outline" onClick={() => startEditingProduct(p)}>
+                            <Pencil className="w-3.5 h-3.5" />
+                            {lang === 'ne' ? 'सम्पादन' : 'Edit'}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={async () => {
+                              const nextStatus = p.status === 'published' ? 'draft' : 'published';
+                              const r = await apiFetch(`/api/coop-dashboard/products/${p.id}`, {
+                                method: 'PATCH',
+                                body: JSON.stringify({ status: nextStatus }),
+                              });
+                              if (!r.ok) {
+                                toast.error(r.error || 'स्थिति परिवर्तन असफल');
+                                return;
+                              }
+                              const ref = await apiFetch<{ products: Array<Record<string, unknown>> }>(
+                                '/api/coop-dashboard/products'
+                              );
+                              if (ref.ok) setProducts(ref.data.products);
+                            }}
+                          >
+                            {p.status === 'published'
+                              ? lang === 'ne'
+                                ? 'मस्यौदामा सार्नुहोस्'
+                                : 'Unpublish'
+                              : lang === 'ne'
+                              ? 'प्रकाशित'
+                              : 'Publish'}
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -854,40 +1174,135 @@ export function CooperativeDashboardPage() {
         {tab === 'inventory' && (
           <div className="space-y-6">
             <div className="bg-white border border-[#E5E2DC] rounded-xl p-5 space-y-3">
-              <h2 className="font-semibold text-base">{lang === 'ne' ? 'स्टक समायोजन' : 'Stock Adjustment'}</h2>
-              <div className="space-y-2">
-                {products.map((p) => (
-                  <div key={String(p.id)} className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-[#F3F1EC] text-sm">
-                    <div>
-                      <span className="font-medium">{lang === 'ne' ? String(p.name_ne) : String(p.name_en)}</span>
-                      <span className="ml-2 text-xs font-mono text-[#78716C]">{String(p.sku)}</span>
+              <h2 className="font-semibold text-base">
+                {lang === 'ne' ? 'स्टक र उपलब्धता व्यवस्थापन' : 'Stock & Availability Management'}
+              </h2>
+              <div className="space-y-3">
+                {products.map((p) => {
+                  const id = String(p.id);
+                  const draft = stockDrafts[id] || { delta: '', note: '' };
+                  return (
+                    <div
+                      key={id}
+                      className="flex flex-col md:flex-row md:items-center justify-between gap-3 py-3 border-b border-[#F3F1EC] text-sm"
+                    >
+                      <div>
+                        <span className="font-medium">{lang === 'ne' ? String(p.name_ne) : String(p.name_en)}</span>
+                        <span className="ml-2 text-xs font-mono text-[#78716C]">{String(p.sku)}</span>
+                        <p className="text-xs tabular-nums font-semibold text-[#0F172A] mt-0.5">
+                          {lang === 'ne'
+                            ? `हालको मौज्दात: ${toNepaliDigits(Number(p.stock_quantity))}`
+                            : `Current Qty: ${p.stock_quantity}`}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Select
+                          value={String(p.availability_status || 'in_stock')}
+                          onChange={async (e) => {
+                            const r = await apiFetch(`/api/coop-dashboard/products/${p.id}`, {
+                              method: 'PATCH',
+                              body: JSON.stringify({ availabilityStatus: e.target.value }),
+                            });
+                            if (!r.ok) {
+                              toast.error(r.error || 'उपलब्धता परिवर्तन असफल');
+                              return;
+                            }
+                            toast.success(lang === 'ne' ? 'उपलब्धता अद्यावधिक भयो' : 'Availability updated');
+                            const pRes = await apiFetch<{ products: Array<Record<string, unknown>> }>(
+                              '/api/coop-dashboard/products'
+                            );
+                            if (pRes.ok) setProducts(pRes.data.products);
+                          }}
+                          className="w-36 h-8 text-xs"
+                        >
+                          <option value="in_stock">{labelFor(STATUS_LABELS, 'in_stock', lang)}</option>
+                          <option value="out_of_stock">{labelFor(STATUS_LABELS, 'out_of_stock', lang)}</option>
+                          <option value="preorder">{labelFor(STATUS_LABELS, 'preorder', lang)}</option>
+                          <option value="discontinued">{labelFor(STATUS_LABELS, 'discontinued', lang)}</option>
+                        </Select>
+
+                        <Input
+                          type="number"
+                          placeholder="+/- Qty"
+                          value={draft.delta}
+                          onChange={(e) =>
+                            setStockDrafts((prev) => ({
+                              ...prev,
+                              [id]: { ...draft, delta: e.target.value },
+                            }))
+                          }
+                          className="w-24 h-8 text-xs font-mono"
+                        />
+                        <Input
+                          placeholder={lang === 'ne' ? 'कारण / टिप्पणी' : 'Adjustment note'}
+                          value={draft.note}
+                          onChange={(e) =>
+                            setStockDrafts((prev) => ({
+                              ...prev,
+                              [id]: { ...draft, note: e.target.value },
+                            }))
+                          }
+                          className="w-40 h-8 text-xs"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={async () => {
+                            const qtyDelta = Math.floor(Number(draft.delta));
+                            if (!qtyDelta) {
+                              toast.error(lang === 'ne' ? 'मान्य +/- संख्या प्रविष्ट गर्नुहोस्।' : 'Enter a valid non-zero delta.');
+                              return;
+                            }
+                            const r = await apiFetch(`/api/coop-dashboard/products/${p.id}/adjust-stock`, {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                delta: qtyDelta,
+                                movementType: qtyDelta > 0 ? 'restock' : 'adjustment',
+                                note: draft.note || (qtyDelta > 0 ? 'Stock restock' : 'Manual adjustment'),
+                              }),
+                            });
+                            if (!r.ok) {
+                              toast.error(r.error || 'स्टक समायोजन असफल');
+                              return;
+                            }
+                            toast.success(lang === 'ne' ? 'स्टक अद्यावधिक भयो' : 'Stock adjusted');
+                            setStockDrafts((prev) => ({ ...prev, [id]: { delta: '', note: '' } }));
+                            const [pRes, mRes] = await Promise.all([
+                              apiFetch<{ products: Array<Record<string, unknown>> }>('/api/coop-dashboard/products'),
+                              apiFetch<{ movements: Array<Record<string, unknown>> }>('/api/coop-dashboard/inventory-movements'),
+                            ]);
+                            if (pRes.ok) setProducts(pRes.data.products);
+                            if (mRes.ok) setMovements(mRes.data.movements);
+                          }}
+                        >
+                          {lang === 'ne' ? 'लागू गर्नुहोस्' : 'Apply'}
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            const r = await apiFetch(`/api/coop-dashboard/products/${p.id}/adjust-stock`, {
+                              method: 'POST',
+                              body: JSON.stringify({ delta: 10, movementType: 'restock', note: 'Quick +10 restock' }),
+                            });
+                            if (!r.ok) {
+                              toast.error(r.error || 'स्टक समायोजन असफल');
+                              return;
+                            }
+                            const [pRes, mRes] = await Promise.all([
+                              apiFetch<{ products: Array<Record<string, unknown>> }>('/api/coop-dashboard/products'),
+                              apiFetch<{ movements: Array<Record<string, unknown>> }>('/api/coop-dashboard/inventory-movements'),
+                            ]);
+                            if (pRes.ok) setProducts(pRes.data.products);
+                            if (mRes.ok) setMovements(mRes.data.movements);
+                          }}
+                        >
+                          +10
+                        </Button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs tabular-nums font-semibold">
-                        {lang === 'ne' ? `मौज्दात: ${toNepaliDigits(Number(p.stock_quantity))}` : `Qty: ${p.stock_quantity}`}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={async () => {
-                          await apiFetch(`/api/coop-dashboard/products/${p.id}/adjust-stock`, {
-                            method: 'POST',
-                            body: JSON.stringify({ delta: 10, movementType: 'restock', note: 'Quick +10 restock' }),
-                          });
-                          setTab('inventory');
-                          const [pRes, mRes] = await Promise.all([
-                            apiFetch<{ products: Array<Record<string, unknown>> }>('/api/coop-dashboard/products'),
-                            apiFetch<{ movements: Array<Record<string, unknown>> }>('/api/coop-dashboard/inventory-movements'),
-                          ]);
-                          if (pRes.ok) setProducts(pRes.data.products);
-                          if (mRes.ok) setMovements(mRes.data.movements);
-                        }}
-                      >
-                        +10
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

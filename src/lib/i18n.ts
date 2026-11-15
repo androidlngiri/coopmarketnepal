@@ -25,6 +25,10 @@ export const STATUS_LABELS: Record<string, { ne: string; en: string }> = {
   submitted: { ne: 'पेश गरिएको', en: 'Submitted' },
   verified: { ne: 'प्रमाणित', en: 'Verified' },
   failed: { ne: 'असफल', en: 'Failed' },
+  in_stock: { ne: 'स्टकमा उपलब्ध', en: 'In Stock' },
+  out_of_stock: { ne: 'स्टक समाप्त', en: 'Out of Stock' },
+  preorder: { ne: 'अग्रिम अर्डर', en: 'Pre-order' },
+  discontinued: { ne: 'बन्द गरिएको', en: 'Discontinued' },
 };
 
 export const COOP_TYPES: Record<string, { ne: string; en: string }> = {

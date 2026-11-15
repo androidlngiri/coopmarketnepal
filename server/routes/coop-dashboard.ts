@@ -441,9 +441,13 @@ coopDashboardRouter.patch('/products/:id', requireCooperativeAccess('manage_prod
     return res.status(403).json({ error: 'सहकारी स्वीकृत नभई उत्पादन प्रकाशित गर्न मिल्दैन।' });
   }
 
+  const allowedAvailability = ['in_stock', 'out_of_stock', 'preorder', 'discontinued'];
+  const allowedStatus = ['draft', 'published', 'archived'];
+
   const updatePayload: Record<string, unknown> = {};
-  if (b.nameNe !== undefined) updatePayload.name_ne = b.nameNe;
-  if (b.nameEn !== undefined) updatePayload.name_en = b.nameEn;
+  if (b.nameNe !== undefined) updatePayload.name_ne = String(b.nameNe).trim();
+  if (b.nameEn !== undefined) updatePayload.name_en = String(b.nameEn).trim();
+  if (b.sku !== undefined && String(b.sku).trim()) updatePayload.sku = String(b.sku).trim().toUpperCase();
   if (b.descriptionNe !== undefined) updatePayload.description_ne = b.descriptionNe;
   if (b.descriptionEn !== undefined) updatePayload.description_en = b.descriptionEn;
   if (b.priceNpr !== undefined) updatePayload.price_npr = Number(b.priceNpr);
@@ -454,10 +458,47 @@ coopDashboardRouter.patch('/products/:id', requireCooperativeAccess('manage_prod
   if (b.unitLabelNe !== undefined) updatePayload.unit_label_ne = b.unitLabelNe;
   if (b.unitLabelEn !== undefined) updatePayload.unit_label_en = b.unitLabelEn;
   if (b.globalCategoryId !== undefined) updatePayload.global_category_id = b.globalCategoryId || null;
+  if (b.coopCategoryId !== undefined) updatePayload.coop_category_id = b.coopCategoryId || null;
+  if (b.originDistrict !== undefined) updatePayload.origin_district = b.originDistrict || null;
+  if (b.producerName !== undefined) updatePayload.producer_name = b.producerName || null;
+  if (b.lowStockThreshold !== undefined) updatePayload.low_stock_threshold = Math.max(0, Number(b.lowStockThreshold));
+  if (b.availabilityStatus !== undefined && allowedAvailability.includes(String(b.availabilityStatus))) {
+    updatePayload.availability_status = b.availabilityStatus;
+  }
   if (b.isFeatured !== undefined) updatePayload.is_featured = Boolean(b.isFeatured);
-  if (b.status !== undefined) updatePayload.status = b.status;
+  if (b.status !== undefined && allowedStatus.includes(String(b.status))) updatePayload.status = b.status;
 
-  await sb.from('products').update(updatePayload).eq('id', req.params.id).eq('cooperative_id', coopId);
+  if (b.imageBase64 && String(b.imageBase64).startsWith('data:')) {
+    try {
+      const uploaded = await uploadBase64ToSupabaseStorage({
+        dataUrl: String(b.imageBase64),
+        bucket: 'product-images',
+        folder: coopId,
+      });
+      await sb.from('product_images').update({ is_primary: false }).eq('product_id', req.params.id);
+      await sb.from('product_images').insert({
+        product_id: req.params.id,
+        cooperative_id: coopId,
+        image_url: uploaded.url,
+        alt_text: String(b.nameEn || existing.name_en || ''),
+        is_primary: true,
+      });
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : 'छवि अपलोड असफल।' });
+    }
+  }
+
+  const { error: updateErr } = await sb
+    .from('products')
+    .update(updatePayload)
+    .eq('id', req.params.id)
+    .eq('cooperative_id', coopId);
+
+  if (updateErr) {
+    return res.status(400).json({
+      error: updateErr.code === '23505' ? 'यो SKU पहिले नै प्रयोग भइसकेको छ।' : updateErr.message,
+    });
+  }
   res.json({ ok: true });
 });
 
