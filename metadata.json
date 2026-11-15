@@ -1,0 +1,6 @@
+{
+  "name": "सहकारी बजार — Sahakari Bazar Nepal",
+  "description": "नेपालको राष्ट्रिय बहु-भाडावाल सहकारी बजार SaaS प्लेटफर्म — स्वीकृत सहकारी संस्थाहरूको स्वतन्त्र अनलाइन पसल, कृषि, दुग्ध र हस्तकला उत्पादनहरू।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

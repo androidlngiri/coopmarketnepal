@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Noto Sans Devanagari", "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-display: "Noto Serif Devanagari", "Fraunces", Georgia, serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+@layer base {
+  :root {
+    --background: #FAF9F6;
+    --foreground: #0F172A;
+    --card: #FFFFFF;
+    --card-foreground: #0F172A;
+    --border: #E5E2DC;
+    --muted: #F3F1EC;
+    --muted-foreground: #57534E;
+    --primary: #B91C1C;
+    --primary-foreground: #FFFFFF;
+    --secondary: #15803D;
+    --secondary-foreground: #FFFFFF;
+    --radius: 0.5rem;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, .font-display {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
