@@ -27,9 +27,8 @@
   ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/uploads/(.*)", "destination": "/api/index" },
     { "source": "/robots.txt", "destination": "/api/index" },
     { "source": "/sitemap.xml", "destination": "/api/index" },
-    { "source": "/((?!api|images|uploads|sitemap\\.xml|robots\\.txt).*)", "destination": "/index.html" }
+    { "source": "/((?!api|images|sitemap\\.xml|robots\\.txt).*)", "destination": "/index.html" }
   ]
 }

@@ -1,7 +1,6 @@
 import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
 import type { NextFunction, Request, Response } from 'express';
-import { db } from './db.ts';
+import { parseJsonField, requireSupabaseAdmin } from './supabase-admin.ts';
 
 export type UserRole = 'super_admin' | 'cooperative_admin' | 'cooperative_staff' | 'buyer';
 
@@ -13,7 +12,7 @@ export interface AuthUser {
   phone: string | null;
   role: UserRole;
   preferred_language: 'ne' | 'en';
-  is_active: number;
+  is_active: boolean;
   cooperative_id?: string | null;
   cooperative_status?: string | null;
   permissions?: Record<string, boolean>;
@@ -31,42 +30,34 @@ declare global {
 const SESSION_COOKIE_NAME = 'sahakari_session';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function hashPassword(password: string): string {
-  return bcrypt.hashSync(password, 10);
-}
-
-export function verifyPassword(password: string, hash: string): boolean {
-  return bcrypt.compareSync(password, hash);
-}
-
 export function hashSessionToken(token: string): string {
   const secret = process.env.SESSION_SECRET || 'sahakari-dev-session-secret';
   return crypto.createHmac('sha256', secret).update(token).digest('hex');
 }
 
-export function createSession(userId: string, req: Request, res: Response): string {
+export async function createSession(userId: string, req: Request, res: Response): Promise<string> {
+  const sb = requireSupabaseAdmin();
   const rawToken = crypto.randomBytes(32).toString('hex');
   const tokenHash = hashSessionToken(rawToken);
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
 
-  db.prepare(
-    `INSERT INTO sessions (id, user_id, token_hash, ip_address, user_agent, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(
-    crypto.randomUUID(),
-    userId,
-    tokenHash,
-    req.ip || null,
-    req.get('user-agent')?.slice(0, 250) || null,
-    expiresAt
-  );
+  const { error } = await sb.from('sessions').insert({
+    user_id: userId,
+    token_hash: tokenHash,
+    ip_address: req.ip || null,
+    user_agent: req.get('user-agent')?.slice(0, 250) || null,
+    expires_at: expiresAt,
+  });
+  if (error) {
+    throw new Error(`Session create error: ${error.message}`);
+  }
 
-  db.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).run(userId);
+  await sb.from('profiles').update({ last_login_at: new Date().toISOString() }).eq('id', userId);
 
   res.cookie(SESSION_COOKIE_NAME, rawToken, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL),
     maxAge: SESSION_TTL_MS,
     path: '/',
   });
@@ -74,10 +65,11 @@ export function createSession(userId: string, req: Request, res: Response): stri
   return rawToken;
 }
 
-export function destroySession(req: Request, res: Response) {
+export async function destroySession(req: Request, res: Response): Promise<void> {
   const token = extractToken(req);
   if (token) {
-    db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(hashSessionToken(token));
+    const sb = requireSupabaseAdmin();
+    await sb.from('sessions').delete().eq('token_hash', hashSessionToken(token));
   }
   res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
 }
@@ -91,44 +83,52 @@ function extractToken(req: Request): string | null {
   return typeof cookieToken === 'string' && cookieToken.length > 0 ? cookieToken : null;
 }
 
-export function resolveAuthUser(req: Request): AuthUser | null {
+export async function resolveAuthUser(req: Request): Promise<AuthUser | null> {
   const token = extractToken(req);
   if (!token) return null;
 
+  const sb = requireSupabaseAdmin();
   const tokenHash = hashSessionToken(token);
-  const row = db
-    .prepare(
-      `SELECT u.id, u.full_name, u.full_name_ne, u.email, u.phone, u.role, u.preferred_language, u.is_active, s.expires_at
-       FROM sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ?`
-    )
-    .get(tokenHash) as (AuthUser & { expires_at: string }) | undefined;
 
-  if (!row || !row.is_active) return null;
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(tokenHash);
+  const { data: sess, error: sessErr } = await sb
+    .from('sessions')
+    .select('expires_at, profiles:user_id (id, full_name, full_name_ne, email, phone, role, preferred_language, is_active)')
+    .eq('token_hash', tokenHash)
+    .maybeSingle();
+
+  if (sessErr || !sess || !sess.profiles) {
     return null;
   }
 
-  // Independent Super-Admin table check
-  if (row.role === 'super_admin') {
-    const adminRow = db
-      .prepare(`SELECT is_active FROM platform_administrators WHERE user_id = ?`)
-      .get(row.id) as { is_active: number } | undefined;
+  const profile = (Array.isArray(sess.profiles) ? sess.profiles[0] : sess.profiles) as AuthUser | undefined;
+  if (!profile || !profile.is_active) return null;
+
+  if (new Date(String(sess.expires_at)).getTime() < Date.now()) {
+    await sb.from('sessions').delete().eq('token_hash', tokenHash);
+    return null;
+  }
+
+  if (profile.role === 'super_admin') {
+    const { data: adminRow } = await sb
+      .from('platform_administrators')
+      .select('is_active')
+      .eq('user_id', profile.id)
+      .maybeSingle();
     if (!adminRow || !adminRow.is_active) return null;
   }
 
-  // Resolve cooperative membership & permissions
-  if (row.role === 'cooperative_admin' || row.role === 'cooperative_staff') {
-    const ownedCoop = db
-      .prepare(`SELECT id, status FROM cooperatives WHERE owner_user_id = ? LIMIT 1`)
-      .get(row.id) as { id: string; status: string } | undefined;
+  if (profile.role === 'cooperative_admin' || profile.role === 'cooperative_staff') {
+    const { data: ownedCoop } = await sb
+      .from('cooperatives')
+      .select('id, status')
+      .eq('owner_user_id', profile.id)
+      .limit(1)
+      .maybeSingle();
 
     if (ownedCoop) {
-      row.cooperative_id = ownedCoop.id;
-      row.cooperative_status = ownedCoop.status;
-      row.permissions = {
+      profile.cooperative_id = ownedCoop.id;
+      profile.cooperative_status = ownedCoop.status;
+      profile.permissions = {
         manage_products: true,
         manage_orders: true,
         manage_inventory: true,
@@ -138,33 +138,34 @@ export function resolveAuthUser(req: Request): AuthUser | null {
         manage_settings: true,
       };
     } else {
-      const staffRow = db
-        .prepare(
-          `SELECT cs.cooperative_id, cs.permissions_json, c.status
-           FROM cooperative_staff cs
-           JOIN cooperatives c ON c.id = cs.cooperative_id
-           WHERE cs.user_id = ? AND cs.is_active = 1
-           LIMIT 1`
-        )
-        .get(row.id) as { cooperative_id: string; permissions_json: string; status: string } | undefined;
+      const { data: staffRow } = await sb
+        .from('cooperative_staff')
+        .select('cooperative_id, permissions_json, cooperatives:cooperative_id (status)')
+        .eq('user_id', profile.id)
+        .eq('is_active', true)
+        .limit(1)
+        .maybeSingle();
 
       if (staffRow) {
-        row.cooperative_id = staffRow.cooperative_id;
-        row.cooperative_status = staffRow.status;
-        try {
-          row.permissions = JSON.parse(staffRow.permissions_json);
-        } catch {
-          row.permissions = {};
-        }
+        const coopRel = Array.isArray(staffRow.cooperatives)
+          ? staffRow.cooperatives[0]
+          : staffRow.cooperatives;
+        profile.cooperative_id = staffRow.cooperative_id;
+        profile.cooperative_status = (coopRel as { status?: string } | null)?.status ?? null;
+        profile.permissions = parseJsonField<Record<string, boolean>>(staffRow.permissions_json, {});
       }
     }
   }
 
-  return row;
+  return profile;
 }
 
-export function attachAuth(req: Request, _res: Response, next: NextFunction) {
-  req.authUser = resolveAuthUser(req);
+export async function attachAuth(req: Request, _res: Response, next: NextFunction) {
+  try {
+    req.authUser = await resolveAuthUser(req);
+  } catch {
+    req.authUser = null;
+  }
   next();
 }
 
@@ -175,17 +176,25 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
+export async function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.authUser || req.authUser.role !== 'super_admin') {
     return res.status(403).json({ error: 'सुपर एडमिन अधिकार आवश्यक छ (Super admin access required).' });
   }
-  const adminRow = db
-    .prepare(`SELECT is_active FROM platform_administrators WHERE user_id = ?`)
-    .get(req.authUser.id) as { is_active: number } | undefined;
-  if (!adminRow || !adminRow.is_active) {
-    return res.status(403).json({ error: 'निष्क्रिय प्रशासक खाता।' });
+  try {
+    const sb = requireSupabaseAdmin();
+    const { data: adminRow } = await sb
+      .from('platform_administrators')
+      .select('is_active')
+      .eq('user_id', req.authUser.id)
+      .maybeSingle();
+
+    if (!adminRow || !adminRow.is_active) {
+      return res.status(403).json({ error: 'निष्क्रिय प्रशासक खाता।' });
+    }
+    next();
+  } catch {
+    return res.status(500).json({ error: 'प्रशासक प्रमाणीकरण जाँच गर्न असफल।' });
   }
-  next();
 }
 
 export function requireCooperativeAccess(permission?: string) {
@@ -207,7 +216,7 @@ export function requireCooperativeAccess(permission?: string) {
   };
 }
 
-export function writeAuditLog(params: {
+export async function writeAuditLog(params: {
   actorUserId?: string | null;
   actorRole?: string | null;
   cooperativeId?: string | null;
@@ -216,24 +225,25 @@ export function writeAuditLog(params: {
   entityId?: string | null;
   metadata?: Record<string, unknown>;
   ipAddress?: string | null;
-}) {
-  db.prepare(
-    `INSERT INTO audit_logs (id, actor_user_id, actor_role, cooperative_id, action, entity_type, entity_id, metadata_json, ip_address)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    crypto.randomUUID(),
-    params.actorUserId ?? null,
-    params.actorRole ?? null,
-    params.cooperativeId ?? null,
-    params.action,
-    params.entityType,
-    params.entityId ?? null,
-    JSON.stringify(params.metadata ?? {}),
-    params.ipAddress ?? null
-  );
+}): Promise<void> {
+  try {
+    const sb = requireSupabaseAdmin();
+    await sb.from('audit_logs').insert({
+      actor_user_id: params.actorUserId ?? null,
+      actor_role: params.actorRole ?? null,
+      cooperative_id: params.cooperativeId ?? null,
+      action: params.action,
+      entity_type: params.entityType,
+      entity_id: params.entityId ?? null,
+      metadata_json: params.metadata ?? {},
+      ip_address: params.ipAddress ?? null,
+    });
+  } catch {
+    // Non-blocking audit log safeguard
+  }
 }
 
-// Simple in-memory sliding window rate limiter for sensitive routes
+// Per-isolate sliding window rate limiter for sensitive routes
 const rateBuckets = new Map<string, number[]>();
 
 export function rateLimit(keyPrefix: string, maxRequests: number, windowMs: number) {

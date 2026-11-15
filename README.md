@@ -13,16 +13,17 @@ National Multi-Tenant Cooperative Marketplace SaaS Platform for Nepal.
 - **Cooperative & Super-Admin Dashboards**: Tenant-scoped cooperative analytics, CSV export, staff permissions, promotions, delivery configuration, billing, and centralized SaaS Super-Admin oversight (plans, manual payment verification, product moderation, audit logs, SMS logs).
 - **Akash SMS Integration**: Server-side HTTP adapter (`server/akash-sms.ts`) with OTP expiry, cooldown, hourly rate limiting, attempt caps, and SMS delivery logs.
 
-## Database Setup (Supabase PostgreSQL + Local Runtime)
+## Database Setup (Supabase PostgreSQL, Auth & Storage)
 
 1. **Supabase PostgreSQL**:
-   Apply the SQL migrations in order via Supabase Dashboard SQL Editor or CLI:
+   Apply the SQL migrations in order via Supabase Dashboard SQL Editor or CLI (or run `supabase/ALL_IN_ONE_SETUP.sql`):
    - `supabase/migrations/0001_initial_schema.sql`
    - `supabase/migrations/0002_rls_policies.sql`
    - `supabase/migrations/0003_storage_policies.sql`
+   - `supabase/migrations/0004_runtime_parity_and_rpc.sql`
    - `supabase/seed.sql`
-2. **Local Runtime Persistence**:
-   The Express server (`server.ts`) automatically initializes a normalized SQLite relational database (`./data/sahakari.db`) with foreign keys, transactions, and idempotent showcase seed data (`server/seed.ts`) so all workflows run immediately.
+2. **Zero Local Persistence**:
+   All operational data, sessions, OTPs, audit logs, and file uploads (Supabase Storage buckets: `cooperative-logos`, `cooperative-documents`, `product-images`, `store-banners`) persist directly in Supabase.
 
 ## Environment Variables
 

@@ -1,8 +1,7 @@
-import crypto from 'crypto';
 import { Router } from 'express';
-import { db } from '../db.ts';
 import { rateLimit, requireAuth } from '../auth.ts';
 import { isValidNepalMobile, normalizeNepalPhone, sendAkashSms, verifyOtpCode } from '../akash-sms.ts';
+import { requireSupabaseAdmin } from '../supabase-admin.ts';
 
 export const checkoutRouter = Router();
 
@@ -16,9 +15,34 @@ interface CoopCheckoutOption {
   promoCode?: string;
 }
 
-function buildValidatedGroups(items: CartItemInput[], coopOptions: Record<string, CoopCheckoutOption> = {}) {
+async function buildValidatedGroups(
+  items: CartItemInput[],
+  coopOptions: Record<string, CoopCheckoutOption> = {}
+) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error('कार्ट खाली छ।');
+  }
+
+  const sb = requireSupabaseAdmin();
+  const productIds = Array.from(new Set(items.map((i) => String(i.productId)).filter(Boolean)));
+  if (productIds.length === 0) {
+    throw new Error('कार्ट खाली छ।');
+  }
+
+  const { data: rawProducts, error: prodErr } = await sb
+    .from('products')
+    .select(
+      `*,
+       product_images (image_url, is_primary, sort_order),
+       cooperatives!inner (id, name_ne, name_en, slug, status, stores!inner (store_name_ne, store_name_en, is_published))`
+    )
+    .in('id', productIds);
+
+  if (prodErr) throw new Error(prodErr.message);
+
+  const productMap = new Map<string, Record<string, unknown>>();
+  for (const raw of rawProducts || []) {
+    productMap.set(String(raw.id), raw as Record<string, unknown>);
   }
 
   const byCoop = new Map<
@@ -47,65 +71,55 @@ function buildValidatedGroups(items: CartItemInput[], coopOptions: Record<string
       throw new Error('अमान्य उत्पादन परिमाण।');
     }
 
-    const product = db
-      .prepare(
-        `SELECT p.*, c.id AS coop_id, c.name_ne AS coop_name_ne, c.name_en AS coop_name_en, c.slug AS coop_slug, c.status AS coop_status,
-                s.store_name_ne, s.store_name_en, s.is_published,
-                (SELECT image_url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.is_primary DESC LIMIT 1) AS image_url
-         FROM products p
-         JOIN cooperatives c ON c.id = p.cooperative_id
-         JOIN stores s ON s.cooperative_id = c.id
-         WHERE p.id = ?`
-      )
-      .get(item.productId) as Record<string, unknown> | undefined;
-
-    if (!product) {
+    const raw = productMap.get(String(item.productId));
+    if (!raw) {
       throw new Error('कार्टमा रहेको एउटा उत्पादन फेला परेन।');
     }
-    if (product.coop_status !== 'approved' || !product.is_published) {
-      throw new Error(`सहकारी पसल स्वीकृत वा प्रकाशित छैन (${product.coop_name_ne})।`);
+
+    const coop = (Array.isArray(raw.cooperatives) ? raw.cooperatives[0] : raw.cooperatives) as Record<string, unknown>;
+    const store = (Array.isArray(coop?.stores) ? coop.stores[0] : coop?.stores) as Record<string, unknown>;
+    const imgs = (raw.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
+    const primaryImg = imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null;
+
+    if (coop.status !== 'approved' || !store?.is_published) {
+      throw new Error(`सहकारी पसल स्वीकृत वा प्रकाशित छैन (${coop.name_ne})।`);
     }
-    if (product.status !== 'published' || product.is_prohibited) {
-      throw new Error(`उत्पादन हाल उपलब्ध छैन (${product.name_ne})।`);
+    if (raw.status !== 'published' || raw.is_prohibited) {
+      throw new Error(`उत्पादन हाल उपलब्ध छैन (${raw.name_ne})।`);
     }
-    if (Number(product.stock_quantity) < qty) {
-      throw new Error(`"${product.name_ne}" को स्टक अपुग छ (उपलब्ध: ${product.stock_quantity})।`);
+    if (Number(raw.stock_quantity) < qty) {
+      throw new Error(`"${raw.name_ne}" को स्टक अपुग छ (उपलब्ध: ${raw.stock_quantity})।`);
     }
 
-    // Active subscription check
-    const activeSub = db
-      .prepare(
-        `SELECT id FROM subscriptions
-         WHERE cooperative_id = ? AND status IN ('trial', 'active') AND ends_at > datetime('now')
-         LIMIT 1`
-      )
-      .get(product.coop_id);
-    if (!activeSub) {
-      throw new Error(`${product.coop_name_ne} को सदस्यता अवधि सक्रिय छैन।`);
-    }
-
-    const unitPrice =
-      product.discount_price_npr !== null && Number(product.discount_price_npr) > 0
-        ? Number(product.discount_price_npr)
-        : Number(product.price_npr);
-    const lineTotal = Number((unitPrice * qty).toFixed(2));
-
-    const coopId = String(product.coop_id);
+    const coopId = String(coop.id);
     if (!byCoop.has(coopId)) {
-      const deliveryConfig = db
-        .prepare(`SELECT * FROM delivery_configs WHERE cooperative_id = ?`)
-        .get(coopId) as Record<string, unknown> | undefined;
+      const [{ data: activeSub }, { data: deliveryConfig }] = await Promise.all([
+        sb
+          .from('subscriptions')
+          .select('id')
+          .eq('cooperative_id', coopId)
+          .in('status', ['trial', 'active'])
+          .gt('ends_at', new Date().toISOString())
+          .limit(1)
+          .maybeSingle(),
+        sb.from('delivery_configs').select('*').eq('cooperative_id', coopId).maybeSingle(),
+      ]);
+
+      if (!activeSub) {
+        throw new Error(`${coop.name_ne} को सदस्यता अवधि सक्रिय छैन।`);
+      }
+
       const opt = coopOptions[coopId] || {};
       byCoop.set(coopId, {
         cooperative: {
           id: coopId,
-          slug: product.coop_slug,
-          name_ne: product.coop_name_ne,
-          name_en: product.coop_name_en,
-          store_name_ne: product.store_name_ne,
-          store_name_en: product.store_name_en,
+          slug: coop.slug,
+          name_ne: coop.name_ne,
+          name_en: coop.name_en,
+          store_name_ne: store.store_name_ne,
+          store_name_en: store.store_name_en,
         },
-        deliveryConfig,
+        deliveryConfig: deliveryConfig || undefined,
         items: [],
         subtotal: 0,
         discount: 0,
@@ -116,43 +130,50 @@ function buildValidatedGroups(items: CartItemInput[], coopOptions: Record<string
       });
     }
 
+    const unitPrice =
+      raw.discount_price_npr !== null && Number(raw.discount_price_npr) > 0
+        ? Number(raw.discount_price_npr)
+        : Number(raw.price_npr);
+    const lineTotal = Number((unitPrice * qty).toFixed(2));
+
+    const { cooperatives: _coops, product_images: _imgs, ...productRest } = raw;
+    const productSummary: Record<string, unknown> = { ...productRest, image_url: primaryImg };
+
     const group = byCoop.get(coopId)!;
-    group.items.push({ product, quantity: qty, unitPrice, lineTotal });
+    group.items.push({ product: productSummary, quantity: qty, unitPrice, lineTotal });
     group.subtotal = Number((group.subtotal + lineTotal).toFixed(2));
   }
 
   const groups = Array.from(byCoop.values());
+  const nowIso = new Date().toISOString();
+
   for (const g of groups) {
     const minOrder = Number(g.deliveryConfig?.minimum_order_npr || 0);
     if (minOrder > 0 && g.subtotal < minOrder) {
-      throw new Error(
-        `${g.cooperative.store_name_ne} को न्यूनतम अर्डर रकम रु. ${minOrder} छ।`
-      );
+      throw new Error(`${g.cooperative.store_name_ne} को न्यूनतम अर्डर रकम रु. ${minOrder} छ।`);
     }
 
-    // Apply promo code if provided
     if (g.promoCode) {
-      const promo = db
-        .prepare(
-          `SELECT * FROM promotions
-           WHERE cooperative_id = ? AND upper(code) = upper(?) AND is_active = 1
-             AND starts_at <= datetime('now') AND ends_at >= datetime('now')
-             AND (max_uses IS NULL OR used_count < max_uses)
-           LIMIT 1`
-        )
-        .get(g.cooperative.id, g.promoCode) as
-        | {
-            id: string;
-            discount_type: 'percentage' | 'flat';
-            discount_value: number;
-            min_order_npr: number;
-          }
+      const { data: promos } = await sb
+        .from('promotions')
+        .select('*')
+        .eq('cooperative_id', g.cooperative.id)
+        .eq('is_active', true)
+        .lte('starts_at', nowIso)
+        .gte('ends_at', nowIso);
+
+      const promo = (promos || []).find(
+        (p: Record<string, unknown>) =>
+          String(p.code).toUpperCase() === g.promoCode &&
+          (p.max_uses === null || Number(p.used_count) < Number(p.max_uses))
+      ) as
+        | { discount_type: 'percentage' | 'flat'; discount_value: number; min_order_npr: number }
         | undefined;
 
-      if (promo && g.subtotal >= promo.min_order_npr) {
+      if (promo && g.subtotal >= Number(promo.min_order_npr)) {
         g.discount =
           promo.discount_type === 'percentage'
-            ? Number(((g.subtotal * promo.discount_value) / 100).toFixed(2))
+            ? Number(((g.subtotal * Number(promo.discount_value)) / 100).toFixed(2))
             : Math.min(g.subtotal, Number(promo.discount_value));
       } else {
         g.promoCode = null;
@@ -174,9 +195,9 @@ function buildValidatedGroups(items: CartItemInput[], coopOptions: Record<string
   return groups;
 }
 
-checkoutRouter.post('/validate-cart', (req, res) => {
+checkoutRouter.post('/validate-cart', async (req, res) => {
   try {
-    const groups = buildValidatedGroups(req.body?.items || [], req.body?.coopOptions || {});
+    const groups = await buildValidatedGroups(req.body?.items || [], req.body?.coopOptions || {});
     const grandTotal = groups.reduce((acc, g) => acc + g.total, 0);
     res.json({ groups, grandTotal });
   } catch (err) {
@@ -222,7 +243,7 @@ checkoutRouter.post('/place-order', rateLimit('place_order', 10, 5 * 60 * 1000),
     if (!otpCode) {
       return res.status(400).json({ error: 'OTP कोड प्रविष्ट गर्नुहोस्।' });
     }
-    const otpCheck = verifyOtpCode({
+    const otpCheck = await verifyOtpCode({
       phone: normalizedPhone,
       purpose: 'guest_checkout',
       code: String(otpCode),
@@ -232,29 +253,9 @@ checkoutRouter.post('/place-order', rateLimit('place_order', 10, 5 * 60 * 1000),
     }
   }
 
-  const idemKey = idempotencyKey ? String(idempotencyKey).slice(0, 64) : null;
-  if (idemKey) {
-    const existing = db
-      .prepare(`SELECT checkout_group_id, order_number, guest_access_token, total_npr, cooperative_id FROM orders WHERE idempotency_key = ?`)
-      .all(idemKey);
-    if (existing.length > 0) {
-      return res.json({ duplicatePrevented: true, orders: existing });
-    }
-  }
-
-  let createdOrders: Array<{
-    id: string;
-    orderNumber: string;
-    invoiceNumber: string;
-    guestAccessToken: string;
-    cooperativeNameNe: string;
-    cooperativeNameEn: string;
-    totalNpr: number;
-    paymentMethod: string;
-  }> = [];
-
   try {
-    const groups = buildValidatedGroups(items, coopOptions);
+    const sb = requireSupabaseAdmin();
+    const groups = await buildValidatedGroups(items, coopOptions);
 
     for (const g of groups) {
       if (g.deliveryMode === 'delivery' && (!deliveryProvince || !deliveryDistrict || !deliveryAddress)) {
@@ -262,181 +263,52 @@ checkoutRouter.post('/place-order', rateLimit('place_order', 10, 5 * 60 * 1000),
       }
     }
 
-    const checkoutGroupId = crypto.randomUUID();
-    const buyerUserId = req.authUser?.id ?? null;
+    const payload = {
+      idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 64) : null,
+      buyerUserId: req.authUser?.id ?? null,
+      customerName: String(customerName).trim(),
+      customerPhone: normalizedPhone,
+      customerEmail: customerEmail ? String(customerEmail).trim() : null,
+      deliveryProvince: deliveryProvince || null,
+      deliveryDistrict: deliveryDistrict || null,
+      deliveryMunicipality: deliveryMunicipality || null,
+      deliveryWard: deliveryWard || null,
+      deliveryAddress: deliveryAddress || null,
+      deliveryNote: deliveryNote || null,
+      paymentMethod,
+      paymentReference: paymentReference ? String(paymentReference).trim() : null,
+      groups: groups.map((g) => ({
+        cooperativeId: g.cooperative.id,
+        deliveryMode: g.deliveryMode,
+        promoCode: g.promoCode,
+        items: g.items.map((line) => ({
+          productId: line.product.id,
+          quantity: line.quantity,
+        })),
+      })),
+    };
 
-    db.transaction(() => {
-      for (const g of groups) {
-        const orderId = crypto.randomUUID();
-        const suffix = crypto.randomBytes(3).toString('hex').toUpperCase();
-        const orderNumber = `SB-${new Date().getFullYear()}-${suffix}`;
-        const invoiceNumber = `INV-${new Date().getFullYear()}-${suffix}`;
-        const guestAccessToken = crypto.randomBytes(24).toString('hex');
+    const { data: rpcResult, error: rpcErr } = await sb.rpc('place_multi_coop_checkout', {
+      p_payload: payload,
+    });
 
-        // Re-verify & atomically decrement stock inside transaction
-        for (const line of g.items) {
-          const prodRow = db
-            .prepare(`SELECT stock_quantity, low_stock_threshold, name_ne, name_en FROM products WHERE id = ?`)
-            .get(line.product.id) as {
-            stock_quantity: number;
-            low_stock_threshold: number;
-            name_ne: string;
-            name_en: string;
-          };
-          if (prodRow.stock_quantity < line.quantity) {
-            throw new Error(`"${prodRow.name_ne}" को स्टक अपुग भयो।`);
-          }
-          const newQty = prodRow.stock_quantity - line.quantity;
-          db.prepare(
-            `UPDATE products
-             SET stock_quantity = ?, availability_status = ?, updated_at = datetime('now')
-             WHERE id = ?`
-          ).run(newQty, newQty === 0 ? 'out_of_stock' : 'in_stock', line.product.id);
+    if (rpcErr) {
+      return res.status(400).json({ error: rpcErr.message || 'अर्डर प्रक्रिया असफल।' });
+    }
 
-          db.prepare(
-            `INSERT INTO inventory_movements (id, cooperative_id, product_id, movement_type, quantity_delta, previous_quantity, new_quantity, reference_id, note, created_by)
-             VALUES (?, ?, ?, 'order_deduction', ?, ?, ?, ?, ?, ?)`
-          ).run(
-            crypto.randomUUID(),
-            g.cooperative.id,
-            line.product.id,
-            -line.quantity,
-            prodRow.stock_quantity,
-            newQty,
-            orderNumber,
-            `Order ${orderNumber}`,
-            buyerUserId
-          );
+    const result = rpcResult as {
+      duplicatePrevented?: boolean;
+      orders?: Array<{
+        orderNumber?: string;
+        totalNpr?: number;
+      }>;
+    };
 
-          if (newQty <= prodRow.low_stock_threshold) {
-            db.prepare(
-              `INSERT INTO notifications (id, cooperative_id, type, title_ne, title_en, body_ne, body_en, action_url)
-               VALUES (?, ?, 'low_stock', ?, ?, ?, ?, '/cooperative')`
-            ).run(
-              crypto.randomUUID(),
-              g.cooperative.id,
-              'कम स्टक चेतावनी',
-              'Low Stock Alert',
-              `${prodRow.name_ne} को मौज्दात ${newQty} मात्र बाँकी छ।`,
-              `${prodRow.name_en} is down to ${newQty} units.`
-            );
-          }
-        }
+    if (result.duplicatePrevented) {
+      return res.json({ duplicatePrevented: true, orders: result.orders || [] });
+    }
 
-        if (g.promoCode) {
-          db.prepare(`UPDATE promotions SET used_count = used_count + 1 WHERE cooperative_id = ? AND upper(code) = upper(?)`).run(
-            g.cooperative.id,
-            g.promoCode
-          );
-        }
-
-        const initialPaymentStatus =
-          paymentMethod === 'bank_transfer' || paymentMethod === 'qr_manual'
-            ? paymentReference
-              ? 'submitted'
-              : 'pending'
-            : 'pending';
-
-        db.prepare(
-          `INSERT INTO orders (
-            id, checkout_group_id, order_number, invoice_number, cooperative_id, buyer_user_id, is_guest, guest_access_token,
-            idempotency_key, customer_name, customer_phone, customer_email,
-            delivery_mode, delivery_province, delivery_district, delivery_municipality, delivery_ward, delivery_address, delivery_note,
-            subtotal_npr, discount_npr, delivery_fee_npr, total_npr, promo_code,
-            status, payment_method, payment_status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-        ).run(
-          orderId,
-          checkoutGroupId,
-          orderNumber,
-          invoiceNumber,
-          g.cooperative.id,
-          buyerUserId,
-          buyerUserId ? 0 : 1,
-          guestAccessToken,
-          idemKey,
-          String(customerName).trim(),
-          normalizedPhone,
-          customerEmail ? String(customerEmail).trim() : null,
-          g.deliveryMode,
-          deliveryProvince || null,
-          deliveryDistrict || null,
-          deliveryMunicipality || null,
-          deliveryWard || null,
-          deliveryAddress || null,
-          deliveryNote || null,
-          g.subtotal,
-          g.discount,
-          g.deliveryFee,
-          g.total,
-          g.promoCode,
-          paymentMethod,
-          initialPaymentStatus
-        );
-
-        for (const line of g.items) {
-          db.prepare(
-            `INSERT INTO order_items (id, order_id, cooperative_id, product_id, product_name_ne, product_name_en, sku, unit_label, unit_price_npr, quantity, line_total_npr)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(
-            crypto.randomUUID(),
-            orderId,
-            g.cooperative.id,
-            line.product.id,
-            line.product.name_ne,
-            line.product.name_en,
-            line.product.sku,
-            line.product.unit_label_ne,
-            line.unitPrice,
-            line.quantity,
-            line.lineTotal
-          );
-        }
-
-        db.prepare(
-          `INSERT INTO order_status_history (id, order_id, from_status, to_status, note, changed_by)
-           VALUES (?, ?, NULL, 'pending', 'Order placed', ?)`
-        ).run(crypto.randomUUID(), orderId, buyerUserId);
-
-        db.prepare(
-          `INSERT INTO payments (id, order_id, cooperative_id, method, amount_npr, status, transaction_reference)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          crypto.randomUUID(),
-          orderId,
-          g.cooperative.id,
-          paymentMethod,
-          g.total,
-          initialPaymentStatus,
-          paymentReference ? String(paymentReference).trim() : null
-        );
-
-        db.prepare(
-          `INSERT INTO notifications (id, cooperative_id, type, title_ne, title_en, body_ne, body_en, action_url)
-           VALUES (?, ?, 'new_order', ?, ?, ?, ?, '/cooperative')`
-        ).run(
-          crypto.randomUUID(),
-          g.cooperative.id,
-          'नयाँ अर्डर प्राप्त भयो',
-          'New Order Received',
-          `अर्डर ${orderNumber} — रु. ${g.total} (${customerName})`,
-          `Order ${orderNumber} — NPR ${g.total} from ${customerName}`
-        );
-
-        createdOrders.push({
-          id: orderId,
-          orderNumber,
-          invoiceNumber,
-          guestAccessToken,
-          cooperativeNameNe: String(g.cooperative.store_name_ne),
-          cooperativeNameEn: String(g.cooperative.store_name_en),
-          totalNpr: g.total,
-          paymentMethod,
-        });
-      }
-    })();
-
-    // Attempt Akash SMS transactional confirmation (non-blocking)
+    const createdOrders = result.orders || [];
     const orderListText = createdOrders.map((o) => `${o.orderNumber} (रु.${o.totalNpr})`).join(', ');
     await sendAkashSms({
       to: normalizedPhone,
@@ -444,120 +316,178 @@ checkoutRouter.post('/place-order', rateLimit('place_order', 10, 5 * 60 * 1000),
       purpose: 'order_confirmation',
     });
 
-    res.status(201).json({
-      orders: createdOrders,
-    });
+    res.status(201).json({ orders: createdOrders });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'अर्डर प्रक्रिया असफल।' });
   }
 });
 
 // Secure Guest Order Tracking (requires unguessable guestAccessToken)
-checkoutRouter.get('/track', (req, res) => {
+checkoutRouter.get('/track', async (req, res) => {
   const { orderNumber, token } = req.query;
   if (!orderNumber || !token) {
     return res.status(400).json({ error: 'अर्डर नम्बर र सुरक्षा टोकन आवश्यक छ।' });
   }
 
-  const order = db
-    .prepare(
-      `SELECT o.*, c.name_ne AS cooperative_name_ne, c.name_en AS cooperative_name_en, c.slug AS cooperative_slug,
-              s.store_name_ne, s.store_name_en, c.contact_phone AS cooperative_phone
-       FROM orders o
-       JOIN cooperatives c ON c.id = o.cooperative_id
-       JOIN stores s ON s.cooperative_id = c.id
-       WHERE o.order_number = ? AND o.guest_access_token = ?
-       LIMIT 1`
+  const sb = requireSupabaseAdmin();
+  const { data: rawOrder } = await sb
+    .from('orders')
+    .select(
+      `*,
+       cooperatives!inner (name_ne, name_en, slug, contact_phone, stores!inner (store_name_ne, store_name_en))`
     )
-    .get(String(orderNumber).trim(), String(token).trim()) as Record<string, unknown> | undefined;
+    .eq('order_number', String(orderNumber).trim())
+    .eq('guest_access_token', String(token).trim())
+    .limit(1)
+    .maybeSingle();
 
-  if (!order) {
+  if (!rawOrder) {
     return res.status(404).json({ error: 'अर्डर फेला परेन वा सुरक्षा टोकन मिलेन।' });
   }
 
-  const items = db.prepare(`SELECT * FROM order_items WHERE order_id = ?`).all(order.id);
-  const history = db
-    .prepare(`SELECT * FROM order_status_history WHERE order_id = ? ORDER BY created_at ASC`)
-    .all(order.id);
+  const coop = (Array.isArray(rawOrder.cooperatives) ? rawOrder.cooperatives[0] : rawOrder.cooperatives) as Record<
+    string,
+    unknown
+  >;
+  const store = (Array.isArray(coop?.stores) ? coop.stores[0] : coop?.stores) as Record<string, unknown>;
+  const { cooperatives: _c, ...orderRest } = rawOrder as Record<string, unknown>;
+  const order = {
+    ...orderRest,
+    cooperative_name_ne: coop?.name_ne,
+    cooperative_name_en: coop?.name_en,
+    cooperative_slug: coop?.slug,
+    cooperative_phone: coop?.contact_phone,
+    store_name_ne: store?.store_name_ne,
+    store_name_en: store?.store_name_en,
+  };
 
-  res.json({ order, items, history });
+  const [itemsRes, histRes] = await Promise.all([
+    sb.from('order_items').select('*').eq('order_id', rawOrder.id),
+    sb.from('order_status_history').select('*').eq('order_id', rawOrder.id).order('created_at', { ascending: true }),
+  ]);
+
+  res.json({ order, items: itemsRes.data || [], history: histRes.data || [] });
 });
 
 // Registered Buyer Account Routes
-checkoutRouter.get('/buyer/orders', requireAuth, (req, res) => {
-  const orders = db
-    .prepare(
-      `SELECT o.*, s.store_name_ne, s.store_name_en, c.slug AS cooperative_slug
-       FROM orders o
-       JOIN cooperatives c ON c.id = o.cooperative_id
-       JOIN stores s ON s.cooperative_id = c.id
-       WHERE o.buyer_user_id = ?
-       ORDER BY o.created_at DESC`
+checkoutRouter.get('/buyer/orders', requireAuth, async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data: orders } = await sb
+    .from('orders')
+    .select(
+      `*,
+       cooperatives (slug, stores (store_name_ne, store_name_en)),
+       order_items (*)`
     )
-    .all(req.authUser!.id) as Record<string, unknown>[];
+    .eq('buyer_user_id', req.authUser!.id)
+    .order('created_at', { ascending: false });
 
-  const enriched = orders.map((o) => ({
-    ...o,
-    items: db.prepare(`SELECT * FROM order_items WHERE order_id = ?`).all(o.id),
-  }));
+  const enriched = (orders || []).map((o: Record<string, unknown>) => {
+    const coop = (Array.isArray(o.cooperatives) ? o.cooperatives[0] : o.cooperatives) as Record<string, unknown> | null;
+    const store = (Array.isArray(coop?.stores) ? coop.stores[0] : coop?.stores) as Record<string, unknown> | null;
+    const { cooperatives: _c, order_items: items, ...rest } = o;
+    return {
+      ...rest,
+      cooperative_slug: coop?.slug ?? null,
+      store_name_ne: store?.store_name_ne ?? null,
+      store_name_en: store?.store_name_en ?? null,
+      items: items || [],
+    };
+  });
+
   res.json({ orders: enriched });
 });
 
-checkoutRouter.get('/buyer/addresses', requireAuth, (req, res) => {
-  const addresses = db
-    .prepare(`SELECT * FROM buyer_addresses WHERE user_id = ? ORDER BY is_default DESC, created_at DESC`)
-    .all(req.authUser!.id);
-  res.json({ addresses });
+checkoutRouter.get('/buyer/addresses', requireAuth, async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data: addresses } = await sb
+    .from('buyer_addresses')
+    .select('*')
+    .eq('user_id', req.authUser!.id)
+    .order('is_default', { ascending: false })
+    .order('created_at', { ascending: false });
+  res.json({ addresses: addresses || [] });
 });
 
-checkoutRouter.post('/buyer/addresses', requireAuth, (req, res) => {
+checkoutRouter.post('/buyer/addresses', requireAuth, async (req, res) => {
   const { label, recipientName, phone, province, district, municipality, wardNumber, streetAddress } = req.body || {};
   if (!recipientName || !phone || !province || !district || !municipality || !wardNumber || !streetAddress) {
     return res.status(400).json({ error: 'ठेगानाका सबै विवरण आवश्यक छन्।' });
   }
-  const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO buyer_addresses (id, user_id, label, recipient_name, phone, province, district, municipality, ward_number, street_address)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, req.authUser!.id, label || 'Home', recipientName, normalizeNepalPhone(phone), province, district, municipality, wardNumber, streetAddress);
-  res.status(201).json({ id });
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb
+    .from('buyer_addresses')
+    .insert({
+      user_id: req.authUser!.id,
+      label: label || 'Home',
+      recipient_name: recipientName,
+      phone: normalizeNepalPhone(phone),
+      province,
+      district,
+      municipality,
+      ward_number: wardNumber,
+      street_address: streetAddress,
+    })
+    .select('id')
+    .single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ id: data.id });
 });
 
-checkoutRouter.delete('/buyer/addresses/:id', requireAuth, (req, res) => {
-  db.prepare(`DELETE FROM buyer_addresses WHERE id = ? AND user_id = ?`).run(req.params.id, req.authUser!.id);
+checkoutRouter.delete('/buyer/addresses/:id', requireAuth, async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  await sb.from('buyer_addresses').delete().eq('id', req.params.id).eq('user_id', req.authUser!.id);
   res.json({ ok: true });
 });
 
-checkoutRouter.get('/buyer/wishlist', requireAuth, (req, res) => {
-  const items = db
-    .prepare(
-      `SELECT p.*,
-              (SELECT image_url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.is_primary DESC LIMIT 1) AS image_url,
-              c.slug AS cooperative_slug, s.store_name_ne, s.store_name_en
-       FROM wishlists w
-       JOIN products p ON p.id = w.product_id
-       JOIN cooperatives c ON c.id = p.cooperative_id
-       JOIN stores s ON s.cooperative_id = c.id
-       WHERE w.user_id = ?`
+checkoutRouter.get('/buyer/wishlist', requireAuth, async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data: rows } = await sb
+    .from('wishlists')
+    .select(
+      `product_id,
+       products!inner (
+         *,
+         product_images (image_url, is_primary),
+         cooperatives!inner (slug, stores!inner (store_name_ne, store_name_en))
+       )`
     )
-    .all(req.authUser!.id);
+    .eq('user_id', req.authUser!.id);
+
+  const items = (rows || []).map((r: Record<string, unknown>) => {
+    const p = (Array.isArray(r.products) ? r.products[0] : r.products) as Record<string, unknown>;
+    const imgs = (p.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
+    const coop = (Array.isArray(p.cooperatives) ? p.cooperatives[0] : p.cooperatives) as Record<string, unknown>;
+    const store = (Array.isArray(coop?.stores) ? coop.stores[0] : coop?.stores) as Record<string, unknown>;
+    const { product_images: _pi, cooperatives: _c, ...rest } = p;
+    return {
+      ...rest,
+      image_url: imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null,
+      cooperative_slug: coop?.slug,
+      store_name_ne: store?.store_name_ne,
+      store_name_en: store?.store_name_en,
+    };
+  });
+
   res.json({ items });
 });
 
-checkoutRouter.post('/buyer/wishlist/toggle', requireAuth, (req, res) => {
+checkoutRouter.post('/buyer/wishlist/toggle', requireAuth, async (req, res) => {
   const { productId } = req.body || {};
   if (!productId) return res.status(400).json({ error: 'उत्पादन ID आवश्यक छ।' });
-  const existing = db
-    .prepare(`SELECT id FROM wishlists WHERE user_id = ? AND product_id = ?`)
-    .get(req.authUser!.id, productId) as { id: string } | undefined;
+  const sb = requireSupabaseAdmin();
+
+  const { data: existing } = await sb
+    .from('wishlists')
+    .select('id')
+    .eq('user_id', req.authUser!.id)
+    .eq('product_id', productId)
+    .maybeSingle();
+
   if (existing) {
-    db.prepare(`DELETE FROM wishlists WHERE id = ?`).run(existing.id);
+    await sb.from('wishlists').delete().eq('id', existing.id);
     return res.json({ saved: false });
   }
-  db.prepare(`INSERT INTO wishlists (id, user_id, product_id) VALUES (?, ?, ?)`).run(
-    crypto.randomUUID(),
-    req.authUser!.id,
-    productId
-  );
+  await sb.from('wishlists').insert({ user_id: req.authUser!.id, product_id: productId });
   res.json({ saved: true });
 });

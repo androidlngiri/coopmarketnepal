@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { db } from './db.ts';
+import { requireSupabaseAdmin } from './supabase-admin.ts';
 
 export interface SmsSendResult {
   configured: boolean;
@@ -26,7 +26,7 @@ function getAkashAuthToken(): string {
 
 export function isAkashSmsConfigured(): boolean {
   const key = getAkashAuthToken();
-  return Boolean(key && key !== 'your-akash-sms-auth-token' && key !== 'MY_AKASH_SMS_KEY');
+  return Boolean(key && key !== 'your-akash-sms-auth-token' && key !== 'your-aakash-sms-auth-token' && key !== 'MY_AKASH_SMS_KEY');
 }
 
 export function normalizeNepalPhone(phone: string): string {
@@ -48,20 +48,19 @@ export async function sendAkashSms(params: {
   purpose: string;
   cooperativeId?: string | null;
 }): Promise<SmsSendResult> {
+  const sb = requireSupabaseAdmin();
   const normalizedPhone = normalizeNepalPhone(params.to);
   const authToken = getAkashAuthToken();
 
   if (!isAkashSmsConfigured() || !authToken) {
-    db.prepare(
-      `INSERT INTO sms_logs (id, cooperative_id, recipient_phone, purpose, provider, status, provider_response)
-       VALUES (?, ?, ?, ?, 'akash_sms', 'unconfigured', ?)`
-    ).run(
-      crypto.randomUUID(),
-      params.cooperativeId ?? null,
-      normalizedPhone,
-      params.purpose,
-      'AKASH_SMS_API_KEY / AKASH_SMS_AUTH_TOKEN not configured in environment'
-    );
+    await sb.from('sms_logs').insert({
+      cooperative_id: params.cooperativeId ?? null,
+      recipient_phone: normalizedPhone,
+      purpose: params.purpose,
+      provider: 'akash_sms',
+      status: 'unconfigured',
+      provider_response: 'AAKASH_SMS_AUTH_TOKEN not configured in environment',
+    });
 
     return {
       configured: false,
@@ -72,7 +71,6 @@ export async function sendAkashSms(params: {
   }
 
   try {
-    // Verified Akash SMS v3 contract: POST application/x-www-form-urlencoded with auth_token, to, text
     const formBody = new URLSearchParams({
       auth_token: authToken,
       to: normalizedPhone,
@@ -98,17 +96,14 @@ export async function sendAkashSms(params: {
 
     const ok = response.ok && (!parsed || parsed.error === false);
 
-    db.prepare(
-      `INSERT INTO sms_logs (id, cooperative_id, recipient_phone, purpose, provider, status, provider_response)
-       VALUES (?, ?, ?, ?, 'akash_sms', ?, ?)`
-    ).run(
-      crypto.randomUUID(),
-      params.cooperativeId ?? null,
-      normalizedPhone,
-      params.purpose,
-      ok ? 'sent' : 'failed',
-      responseText.slice(0, 1000)
-    );
+    await sb.from('sms_logs').insert({
+      cooperative_id: params.cooperativeId ?? null,
+      recipient_phone: normalizedPhone,
+      purpose: params.purpose,
+      provider: 'akash_sms',
+      status: ok ? 'sent' : 'failed',
+      provider_response: responseText.slice(0, 1000),
+    });
 
     return {
       configured: true,
@@ -121,10 +116,14 @@ export async function sendAkashSms(params: {
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : 'Network error';
-    db.prepare(
-      `INSERT INTO sms_logs (id, cooperative_id, recipient_phone, purpose, provider, status, provider_response)
-       VALUES (?, ?, ?, ?, 'akash_sms', 'failed', ?)`
-    ).run(crypto.randomUUID(), params.cooperativeId ?? null, normalizedPhone, params.purpose, errMsg);
+    await sb.from('sms_logs').insert({
+      cooperative_id: params.cooperativeId ?? null,
+      recipient_phone: normalizedPhone,
+      purpose: params.purpose,
+      provider: 'akash_sms',
+      status: 'failed',
+      provider_response: errMsg,
+    });
 
     return {
       configured: true,
@@ -153,6 +152,7 @@ export async function issueOtp(params: {
   localOtpNotice?: string;
   expiresInSeconds: number;
 }> {
+  const sb = requireSupabaseAdmin();
   const phone = normalizeNepalPhone(params.phone);
   if (!isValidNepalMobile(phone)) {
     return {
@@ -165,16 +165,17 @@ export async function issueOtp(params: {
   }
 
   // Resend cooldown: 60 seconds
-  const recent = db
-    .prepare(
-      `SELECT created_at FROM otp_verifications
-       WHERE phone = ? AND purpose = ?
-       ORDER BY created_at DESC LIMIT 1`
-    )
-    .get(phone, params.purpose) as { created_at: string } | undefined;
+  const { data: recent } = await sb
+    .from('otp_verifications')
+    .select('created_at')
+    .eq('phone', phone)
+    .eq('purpose', params.purpose)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (recent) {
-    const elapsedSec = (Date.now() - new Date(recent.created_at + 'Z').getTime()) / 1000;
+    const elapsedSec = (Date.now() - new Date(String(recent.created_at)).getTime()) / 1000;
     if (elapsedSec < 60) {
       return {
         ok: false,
@@ -188,14 +189,14 @@ export async function issueOtp(params: {
   }
 
   // Hourly rate limit: max 5 OTPs per phone per hour
-  const hourlyCount = db
-    .prepare(
-      `SELECT COUNT(*) AS cnt FROM otp_verifications
-       WHERE phone = ? AND created_at > datetime('now', '-1 hour')`
-    )
-    .get(phone) as { cnt: number };
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { count: hourlyCount } = await sb
+    .from('otp_verifications')
+    .select('*', { count: 'exact', head: true })
+    .eq('phone', phone)
+    .gt('created_at', oneHourAgo);
 
-  if (hourlyCount.cnt >= 5) {
+  if ((hourlyCount || 0) >= 5) {
     return {
       ok: false,
       error: 'अत्यधिक OTP अनुरोध। कृपया १ घण्टापछि पुनः प्रयास गर्नुहोस्।',
@@ -209,10 +210,15 @@ export async function issueOtp(params: {
   const codeHash = hashOtp(phone, code);
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
-  db.prepare(
-    `INSERT INTO otp_verifications (id, phone, purpose, code_hash, attempts, max_attempts, expires_at, ip_address)
-     VALUES (?, ?, ?, ?, 0, 5, ?, ?)`
-  ).run(crypto.randomUUID(), phone, params.purpose, codeHash, expiresAt, params.ipAddress ?? null);
+  await sb.from('otp_verifications').insert({
+    phone,
+    purpose: params.purpose,
+    code_hash: codeHash,
+    attempts: 0,
+    max_attempts: 5,
+    expires_at: expiresAt,
+    ip_address: params.ipAddress ?? null,
+  });
 
   const smsText = `तपाईंको सहकारी बजार प्रमाणीकरण कोड (OTP): ${code}। यो कोड ५ मिनेटमा समाप्त हुन्छ।`;
   const smsResult = await sendAkashSms({
@@ -234,46 +240,53 @@ export async function issueOtp(params: {
   };
 }
 
-export function verifyOtpCode(params: {
+export async function verifyOtpCode(params: {
   phone: string;
   purpose: 'coop_registration' | 'login' | 'guest_checkout' | 'phone_change';
   code: string;
-}): { valid: boolean; error?: string } {
+}): Promise<{ valid: boolean; error?: string }> {
+  const sb = requireSupabaseAdmin();
   const phone = normalizeNepalPhone(params.phone);
-  const record = db
-    .prepare(
-      `SELECT * FROM otp_verifications
-       WHERE phone = ? AND purpose = ? AND verified_at IS NULL
-       ORDER BY created_at DESC LIMIT 1`
-    )
-    .get(phone, params.purpose) as
-    | {
-        id: string;
-        code_hash: string;
-        attempts: number;
-        max_attempts: number;
-        expires_at: string;
-      }
-    | undefined;
+
+  const { data: record } = await sb
+    .from('otp_verifications')
+    .select('id, code_hash, attempts, max_attempts, expires_at')
+    .eq('phone', phone)
+    .eq('purpose', params.purpose)
+    .is('verified_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (!record) {
     return { valid: false, error: 'मान्य OTP फेला परेन। कृपया नयाँ कोड पठाउनुहोस्।' };
   }
 
-  if (new Date(record.expires_at).getTime() < Date.now()) {
+  if (new Date(String(record.expires_at)).getTime() < Date.now()) {
     return { valid: false, error: 'OTP कोडको म्याद समाप्त भएको छ।' };
   }
 
-  if (record.attempts >= record.max_attempts) {
+  if (Number(record.attempts) >= Number(record.max_attempts)) {
     return { valid: false, error: 'अधिकतम प्रयास सीमा नाघ्यो। कृपया नयाँ OTP अनुरोध गर्नुहोस्।' };
   }
 
   const expectedHash = hashOtp(phone, params.code.trim());
-  if (!crypto.timingSafeEqual(Buffer.from(expectedHash), Buffer.from(record.code_hash))) {
-    db.prepare(`UPDATE otp_verifications SET attempts = attempts + 1 WHERE id = ?`).run(record.id);
+  const matches =
+    expectedHash.length === String(record.code_hash).length &&
+    crypto.timingSafeEqual(Buffer.from(expectedHash), Buffer.from(String(record.code_hash)));
+
+  if (!matches) {
+    await sb
+      .from('otp_verifications')
+      .update({ attempts: Number(record.attempts) + 1 })
+      .eq('id', record.id);
     return { valid: false, error: 'गलत OTP कोड।' };
   }
 
-  db.prepare(`UPDATE otp_verifications SET verified_at = datetime('now') WHERE id = ?`).run(record.id);
+  await sb
+    .from('otp_verifications')
+    .update({ verified_at: new Date().toISOString() })
+    .eq('id', record.id);
+
   return { valid: true };
 }

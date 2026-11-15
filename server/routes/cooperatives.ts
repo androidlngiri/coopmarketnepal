@@ -1,10 +1,9 @@
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
 import { Router } from 'express';
-import { db, UPLOADS_DIR } from '../db.ts';
-import { createSession, hashPassword, rateLimit, requireAuth, writeAuditLog } from '../auth.ts';
+import { createSession, rateLimit, requireAuth, writeAuditLog } from '../auth.ts';
 import { issueOtp, normalizeNepalPhone, verifyOtpCode } from '../akash-sms.ts';
+import { createSupabaseAuthUser, requireSupabaseAdmin } from '../supabase-admin.ts';
+import { resolveDocumentAccessUrl, uploadBase64ToSupabaseStorage } from '../storage.ts';
 
 export const cooperativesRouter = Router();
 
@@ -16,22 +15,8 @@ function slugify(input: string): string {
     .slice(0, 48);
 }
 
-function saveBase64Upload(dataUrl: string, prefix: string): { url: string; size: number } | null {
-  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|webp)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/);
-  if (!match) return null;
-  const mime = match[1];
-  const buffer = Buffer.from(match[2], 'base64');
-  if (buffer.length > 5 * 1024 * 1024) {
-    throw new Error('फाइल साइज ५ MB भन्दा कम हुनुपर्छ।');
-  }
-  const ext = mime === 'application/pdf' ? 'pdf' : mime.split('/')[1];
-  const fileName = `${prefix}-${crypto.randomUUID()}.${ext}`;
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(UPLOADS_DIR, fileName), buffer);
-  return { url: `/uploads/${fileName}`, size: buffer.length };
-}
-
 cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), async (req, res) => {
+  const sb = requireSupabaseAdmin();
   const body = req.body || {};
   const {
     nameNe,
@@ -85,11 +70,10 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
   const baseSlug = slugify(String(requestedSlug || requestedStoreName || nameEn)) || `coop-${Date.now()}`;
   const uniqueSlug = `${baseSlug}-${crypto.randomBytes(2).toString('hex')}`;
 
-  // Optional immediate OTP verification if code was sent during step 3 of wizard
   let initialStatus: 'pending_otp' | 'pending_review' = 'pending_otp';
   let otpVerifiedAt: string | null = null;
   if (otpCode) {
-    const otpCheck = verifyOtpCode({
+    const otpCheck = await verifyOtpCode({
       phone: normalizedPhone,
       purpose: 'coop_registration',
       code: String(otpCode),
@@ -105,201 +89,205 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
   let savedDoc: { url: string; size: number } | null = null;
   try {
     if (logoBase64 && String(logoBase64).startsWith('data:')) {
-      savedLogoUrl = saveBase64Upload(String(logoBase64), 'coop-logo')?.url ?? null;
+      savedLogoUrl = (
+        await uploadBase64ToSupabaseStorage({
+          dataUrl: String(logoBase64),
+          bucket: 'cooperative-logos',
+          folder: uniqueSlug,
+          allowPdf: false,
+        })
+      ).url;
     }
     if (documentBase64 && String(documentBase64).startsWith('data:')) {
-      savedDoc = saveBase64Upload(String(documentBase64), 'coop-doc');
+      savedDoc = await uploadBase64ToSupabaseStorage({
+        dataUrl: String(documentBase64),
+        bucket: 'cooperative-documents',
+        folder: uniqueSlug,
+        allowPdf: true,
+      });
     }
   } catch (err) {
     return res.status(400).json({ error: err instanceof Error ? err.message : 'फाइल अपलोड असफल।' });
   }
 
-  const userId = crypto.randomUUID();
-  const coopId = crypto.randomUUID();
-  const storeId = crypto.randomUUID();
+  let userId: string | null = null;
+  let coopId: string | null = null;
+
+  const allowedCoopTypes = ['agriculture', 'dairy', 'multipurpose', 'handicraft', 'consumer', 'savings_credit_producer', 'other'];
+  const validCoopType = allowedCoopTypes.includes(String(cooperativeType || '')) ? String(cooperativeType) : 'multipurpose';
 
   try {
-    db.transaction(() => {
-      db.prepare(
-        `INSERT INTO users (id, full_name, full_name_ne, email, phone, password_hash, role, preferred_language, phone_verified_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'cooperative_admin', 'ne', ?)`
-      ).run(
-        userId,
-        String(authorizedRepName).trim(),
-        String(authorizedRepName).trim(),
-        contactEmail ? String(contactEmail).trim().toLowerCase() : null,
-        normalizedPhone,
-        hashPassword(String(password)),
-        otpVerifiedAt
-      );
+    const createdUser = await createSupabaseAuthUser({
+      email: contactEmail ? String(contactEmail).trim().toLowerCase() : null,
+      phone: normalizedPhone,
+      password: String(password),
+      fullName: String(authorizedRepName).trim(),
+      fullNameNe: String(authorizedRepName).trim(),
+      role: 'cooperative_admin',
+      phoneVerifiedAt: otpVerifiedAt,
+    });
+    userId = createdUser.id;
 
-      db.prepare(
-        `INSERT INTO cooperatives (
-          id, owner_user_id, slug, name_ne, name_en, registration_number, registration_authority,
-          registration_date_ad, registration_date_bs, cooperative_type, pan_vat_number,
-          province, district, municipality, ward_number, tole_address,
-          contact_email, contact_phone, authorized_rep_name, authorized_rep_designation,
-          logo_url, requested_store_name, status, otp_verified_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        coopId,
-        userId,
-        uniqueSlug,
-        String(nameNe).trim(),
-        String(nameEn).trim(),
-        String(registrationNumber).trim(),
-        String(registrationAuthority).trim(),
-        String(registrationDateAd),
-        registrationDateBs ? String(registrationDateBs) : null,
-        String(cooperativeType || 'multipurpose'),
-        panVatNumber ? String(panVatNumber).trim() : null,
-        String(province),
-        String(district),
-        String(municipality).trim(),
-        String(wardNumber).trim(),
-        String(toleAddress).trim(),
-        contactEmail ? String(contactEmail).trim().toLowerCase() : null,
-        normalizedPhone,
-        String(authorizedRepName).trim(),
-        String(authorizedRepDesignation).trim(),
-        savedLogoUrl,
-        String(requestedStoreName).trim(),
-        initialStatus,
-        otpVerifiedAt
-      );
+    const { data: coopRow, error: coopErr } = await sb
+      .from('cooperatives')
+      .insert({
+        owner_user_id: userId,
+        slug: uniqueSlug,
+        name_ne: String(nameNe).trim(),
+        name_en: String(nameEn).trim(),
+        registration_number: String(registrationNumber).trim(),
+        registration_authority: String(registrationAuthority).trim(),
+        registration_date_ad: String(registrationDateAd),
+        registration_date_bs: registrationDateBs ? String(registrationDateBs) : null,
+        cooperative_type: validCoopType,
+        pan_vat_number: panVatNumber ? String(panVatNumber).trim() : null,
+        province: String(province),
+        district: String(district),
+        municipality: String(municipality).trim(),
+        ward_number: String(wardNumber).trim(),
+        tole_address: String(toleAddress).trim(),
+        contact_email: contactEmail ? String(contactEmail).trim().toLowerCase() : null,
+        contact_phone: normalizedPhone,
+        authorized_rep_name: String(authorizedRepName).trim(),
+        authorized_rep_designation: String(authorizedRepDesignation).trim(),
+        logo_url: savedLogoUrl,
+        requested_store_name: String(requestedStoreName).trim(),
+        status: initialStatus,
+        otp_verified_at: otpVerifiedAt,
+      })
+      .select('*')
+      .single();
 
-      if (savedDoc) {
-        db.prepare(
-          `INSERT INTO cooperative_documents (id, cooperative_id, document_type, file_name, file_url, file_size_bytes, verified_status)
-           VALUES (?, ?, 'registration_certificate', ?, ?, ?, 'pending')`
-        ).run(
-          crypto.randomUUID(),
-          coopId,
-          String(documentFileName || 'registration-certificate'),
-          savedDoc.url,
-          savedDoc.size
+    if (coopErr || !coopRow) {
+      throw new Error(coopErr?.code === '23505' ? 'DUPLICATE' : coopErr?.message || 'Coop insert failed');
+    }
+    coopId = coopRow.id;
+
+    if (savedDoc) {
+      await sb.from('cooperative_documents').insert({
+        cooperative_id: coopId,
+        document_type: 'registration_certificate',
+        file_name: String(documentFileName || 'registration-certificate'),
+        file_url: savedDoc.url,
+        file_size_bytes: savedDoc.size,
+        verified_status: 'pending',
+      });
+    }
+
+    await sb.from('cooperative_status_history').insert({
+      cooperative_id: coopId,
+      from_status: null,
+      to_status: initialStatus,
+      reason: initialStatus === 'pending_review' ? 'OTP verified during registration' : 'Registered awaiting OTP verification',
+      changed_by: userId,
+    });
+
+    const defaultSections = [
+      { id: 'hero', type: 'hero', visible: true, title_ne: 'हाम्रा उत्पादनहरू', title_en: 'Our Products' },
+      { id: 'featured_products', type: 'featured_products', visible: true, title_ne: 'विशेष उत्पादनहरू', title_en: 'Featured Products' },
+      { id: 'about', type: 'about', visible: true, title_ne: 'सहकारी परिचय', title_en: 'About Us' },
+      { id: 'notice', type: 'notice', visible: true, title_ne: 'सूचना', title_en: 'Notices' },
+    ];
+
+    await sb.from('stores').insert({
+      cooperative_id: coopId,
+      store_name_ne: String(requestedStoreName).trim(),
+      store_name_en: String(requestedStoreName).trim(),
+      logo_url: savedLogoUrl || '/images/hero-nepal-cooperative.jpg',
+      banner_url: '/images/hero-nepal-cooperative.jpg',
+      contact_phone: normalizedPhone,
+      contact_email: contactEmail ? String(contactEmail).trim().toLowerCase() : null,
+      address_text: `${municipality}-${wardNumber}, ${district}`,
+      sections_json: defaultSections,
+      is_published: false,
+    });
+
+    await sb.from('delivery_configs').insert({
+      cooperative_id: coopId,
+      delivery_areas_json: [district, 'काठमाडौँ उपत्यका'],
+      default_fee_npr: 120,
+      free_delivery_threshold_npr: 2500,
+      minimum_order_npr: 300,
+      pickup_enabled: true,
+      pickup_address_ne: `${toleAddress}, ${municipality}-${wardNumber}, ${district}`,
+    });
+
+    if (initialStatus === 'pending_review') {
+      const { data: admins } = await sb
+        .from('platform_administrators')
+        .select('user_id')
+        .eq('is_active', true);
+
+      if (admins && admins.length > 0) {
+        await sb.from('notifications').insert(
+          admins.map((a: { user_id: string }) => ({
+            recipient_user_id: a.user_id,
+            type: 'coop_pending_review',
+            title_ne: 'नयाँ सहकारी स्वीकृति अनुरोध',
+            title_en: 'New Cooperative Approval Request',
+            body_ne: `${nameNe} (${district}) समीक्षाको लागि प्रतीक्षारत छ।`,
+            body_en: `${nameEn} (${district}) is awaiting verification.`,
+            action_url: '/super-admin',
+          }))
         );
       }
+    }
 
-      db.prepare(
-        `INSERT INTO cooperative_status_history (id, cooperative_id, from_status, to_status, reason, changed_by)
-         VALUES (?, ?, NULL, ?, ?, ?)`
-      ).run(
-        crypto.randomUUID(),
-        coopId,
-        initialStatus,
-        initialStatus === 'pending_review' ? 'OTP verified during registration' : 'Registered awaiting OTP verification',
-        userId
-      );
+    await writeAuditLog({
+      actorUserId: userId,
+      actorRole: 'cooperative_admin',
+      cooperativeId: coopId,
+      action: 'cooperative_registered',
+      entityType: 'cooperative',
+      entityId: coopId,
+      metadata: { status: initialStatus, registrationNumber },
+      ipAddress: req.ip,
+    });
 
-      const defaultSections = JSON.stringify([
-        { id: 'hero', type: 'hero', visible: true, title_ne: 'हाम्रा उत्पादनहरू', title_en: 'Our Products' },
-        { id: 'featured_products', type: 'featured_products', visible: true, title_ne: 'विशेष उत्पादनहरू', title_en: 'Featured Products' },
-        { id: 'about', type: 'about', visible: true, title_ne: 'सहकारी परिचय', title_en: 'About Us' },
-        { id: 'notice', type: 'notice', visible: true, title_ne: 'सूचना', title_en: 'Notices' },
-      ]);
-
-      db.prepare(
-        `INSERT INTO stores (
-          id, cooperative_id, store_name_ne, store_name_en, logo_url, banner_url,
-          contact_phone, contact_email, address_text, sections_json, is_published
-        ) VALUES (?, ?, ?, ?, ?, '/images/hero-nepal-cooperative.jpg', ?, ?, ?, ?, 0)`
-      ).run(
-        storeId,
-        coopId,
-        String(requestedStoreName).trim(),
-        String(requestedStoreName).trim(),
-        savedLogoUrl || '/images/hero-nepal-cooperative.jpg',
-        normalizedPhone,
-        contactEmail ? String(contactEmail).trim().toLowerCase() : null,
-        `${municipality}-${wardNumber}, ${district}`,
-        defaultSections
-      );
-
-      db.prepare(
-        `INSERT INTO delivery_configs (id, cooperative_id, delivery_areas_json, default_fee_npr, free_delivery_threshold_npr, minimum_order_npr, pickup_enabled, pickup_address_ne)
-         VALUES (?, ?, ?, 120, 2500, 300, 1, ?)`
-      ).run(
-        crypto.randomUUID(),
-        coopId,
-        JSON.stringify([district, 'काठमाडौँ उपत्यका']),
-        `${toleAddress}, ${municipality}-${wardNumber}, ${district}`
-      );
-
-      // Notify super admins if ready for review
-      if (initialStatus === 'pending_review') {
-        const admins = db.prepare(`SELECT user_id FROM platform_administrators WHERE is_active = 1`).all() as {
-          user_id: string;
-        }[];
-        for (const a of admins) {
-          db.prepare(
-            `INSERT INTO notifications (id, recipient_user_id, type, title_ne, title_en, body_ne, body_en, action_url)
-             VALUES (?, ?, 'coop_pending_review', ?, ?, ?, ?, '/super-admin')`
-          ).run(
-            crypto.randomUUID(),
-            a.user_id,
-            'नयाँ सहकारी स्वीकृति अनुरोध',
-            'New Cooperative Approval Request',
-            `${nameNe} (${district}) समीक्षाको लागि प्रतीक्षारत छ।`,
-            `${nameEn} (${district}) is awaiting verification.`
-          );
-        }
-      }
-
-      writeAuditLog({
-        actorUserId: userId,
-        actorRole: 'cooperative_admin',
-        cooperativeId: coopId,
-        action: 'cooperative_registered',
-        entityType: 'cooperative',
-        entityId: coopId,
-        metadata: { status: initialStatus, registrationNumber },
+    let otpResult = null;
+    if (initialStatus === 'pending_otp') {
+      otpResult = await issueOtp({
+        phone: normalizedPhone,
+        purpose: 'coop_registration',
         ipAddress: req.ip,
       });
-    })();
+    }
+
+    await createSession(userId, req, res);
+    res.status(201).json({ cooperative: coopRow, otpResult });
   } catch (err) {
+    if (userId && !coopId) {
+      await sb.auth.admin.deleteUser(userId);
+    }
     const msg = err instanceof Error ? err.message : '';
-    if (msg.includes('UNIQUE')) {
+    if (msg === 'DUPLICATE_USER' || msg === 'DUPLICATE' || msg.includes('duplicate')) {
       return res.status(400).json({
         error: 'यो दर्ता नम्बर, मोबाइल नम्बर वा इमेल पहिले नै दर्ता भइसकेको छ।',
       });
     }
     return res.status(500).json({ error: 'सहकारी दर्ता प्रक्रियामा त्रुटि भयो।' });
   }
-
-  let otpResult = null;
-  if (initialStatus === 'pending_otp') {
-    otpResult = await issueOtp({
-      phone: normalizedPhone,
-      purpose: 'coop_registration',
-      ipAddress: req.ip,
-    });
-  }
-
-  createSession(userId, req, res);
-  const cooperative = db.prepare(`SELECT * FROM cooperatives WHERE id = ?`).get(coopId);
-
-  res.status(201).json({
-    cooperative,
-    otpResult,
-  });
 });
 
-cooperativesRouter.post('/verify-otp', requireAuth, (req, res) => {
+cooperativesRouter.post('/verify-otp', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   if (!code) {
     return res.status(400).json({ error: 'OTP कोड आवश्यक छ।' });
   }
 
-  const coop = db
-    .prepare(`SELECT * FROM cooperatives WHERE owner_user_id = ? LIMIT 1`)
-    .get(req.authUser!.id) as { id: string; contact_phone: string; status: string; name_ne: string; name_en: string; district: string } | undefined;
+  const sb = requireSupabaseAdmin();
+  const { data: coop } = await sb
+    .from('cooperatives')
+    .select('id, contact_phone, status, name_ne, name_en, district')
+    .eq('owner_user_id', req.authUser!.id)
+    .limit(1)
+    .maybeSingle();
 
   if (!coop) {
     return res.status(404).json({ error: 'सहकारी फेला परेन।' });
   }
 
-  const check = verifyOtpCode({
+  const check = await verifyOtpCode({
     phone: coop.contact_phone,
     purpose: 'coop_registration',
     code: String(code),
@@ -308,30 +296,47 @@ cooperativesRouter.post('/verify-otp', requireAuth, (req, res) => {
     return res.status(400).json({ error: check.error });
   }
 
-  db.transaction(() => {
-    db.prepare(
-      `UPDATE cooperatives SET status = 'pending_review', otp_verified_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`
-    ).run(coop.id);
-    db.prepare(`UPDATE users SET phone_verified_at = datetime('now') WHERE id = ?`).run(req.authUser!.id);
-    db.prepare(
-      `INSERT INTO cooperative_status_history (id, cooperative_id, from_status, to_status, reason, changed_by)
-       VALUES (?, ?, ?, 'pending_review', 'Mobile OTP verified', ?)`
-    ).run(crypto.randomUUID(), coop.id, coop.status, req.authUser!.id);
-  })();
+  const nowIso = new Date().toISOString();
+  await Promise.all([
+    sb.from('cooperatives').update({ status: 'pending_review', otp_verified_at: nowIso }).eq('id', coop.id),
+    sb.from('profiles').update({ phone_verified_at: nowIso }).eq('id', req.authUser!.id),
+    sb.from('cooperative_status_history').insert({
+      cooperative_id: coop.id,
+      from_status: coop.status,
+      to_status: 'pending_review',
+      reason: 'Mobile OTP verified',
+      changed_by: req.authUser!.id,
+    }),
+  ]);
 
   res.json({ ok: true, status: 'pending_review' });
 });
 
-cooperativesRouter.get('/my-status', requireAuth, (req, res) => {
+cooperativesRouter.get('/my-status', requireAuth, async (req, res) => {
   if (!req.authUser?.cooperative_id) {
     return res.json({ cooperative: null });
   }
-  const cooperative = db.prepare(`SELECT * FROM cooperatives WHERE id = ?`).get(req.authUser.cooperative_id);
-  const history = db
-    .prepare(`SELECT * FROM cooperative_status_history WHERE cooperative_id = ? ORDER BY created_at DESC`)
-    .all(req.authUser.cooperative_id);
-  const documents = db
-    .prepare(`SELECT * FROM cooperative_documents WHERE cooperative_id = ?`)
-    .all(req.authUser.cooperative_id);
-  res.json({ cooperative, history, documents });
+  const sb = requireSupabaseAdmin();
+  const [coopRes, histRes, docsRes] = await Promise.all([
+    sb.from('cooperatives').select('*').eq('id', req.authUser.cooperative_id).maybeSingle(),
+    sb
+      .from('cooperative_status_history')
+      .select('*')
+      .eq('cooperative_id', req.authUser.cooperative_id)
+      .order('created_at', { ascending: false }),
+    sb.from('cooperative_documents').select('*').eq('cooperative_id', req.authUser.cooperative_id),
+  ]);
+
+  const documents = await Promise.all(
+    (docsRes.data || []).map(async (d: Record<string, unknown>) => ({
+      ...d,
+      file_url: await resolveDocumentAccessUrl(String(d.file_url || '')),
+    }))
+  );
+
+  res.json({
+    cooperative: coopRes.data,
+    history: histRes.data || [],
+    documents,
+  });
 });

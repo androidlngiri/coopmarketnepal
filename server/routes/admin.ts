@@ -1,99 +1,120 @@
-import crypto from 'crypto';
 import { Router } from 'express';
-import { db } from '../db.ts';
 import { requireSuperAdmin, writeAuditLog } from '../auth.ts';
 import { isAkashSmsConfigured, sendAkashSms } from '../akash-sms.ts';
+import { parseJsonField, requireSupabaseAdmin, verifySupabaseConnection } from '../supabase-admin.ts';
+import { resolveDocumentAccessUrl } from '../storage.ts';
 
 export const adminRouter = Router();
 
 adminRouter.use(requireSuperAdmin);
 
-adminRouter.get('/overview', (_req, res) => {
-  const coopCounts = db
-    .prepare(
-      `SELECT
-        COUNT(*) AS total,
-        SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved,
-        SUM(CASE WHEN status IN ('pending_review','pending_otp') THEN 1 ELSE 0 END) AS pending,
-        SUM(CASE WHEN status = 'suspended' THEN 1 ELSE 0 END) AS suspended,
-        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected
-       FROM cooperatives`
-    )
-    .get();
+adminRouter.get('/overview', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
 
-  const subCounts = db
-    .prepare(
-      `SELECT
-        SUM(CASE WHEN status IN ('trial','active') AND ends_at > datetime('now') THEN 1 ELSE 0 END) AS active_subs,
-        SUM(CASE WHEN status = 'expired' OR ends_at <= datetime('now') THEN 1 ELSE 0 END) AS expired_subs
-       FROM subscriptions`
-    )
-    .get();
+  const [metricsRes, auditsRes] = await Promise.all([
+    sb.rpc('get_admin_overview_metrics'),
+    sb
+      .from('audit_logs')
+      .select('*, profiles:actor_user_id (full_name)')
+      .order('created_at', { ascending: false })
+      .limit(20),
+  ]);
 
-  const marketplaceStats = db
-    .prepare(
-      `SELECT
-        (SELECT COUNT(*) FROM products WHERE status != 'archived') AS total_products,
-        (SELECT COUNT(*) FROM orders) AS total_orders,
-        (SELECT COUNT(*) FROM orders WHERE is_guest = 1) AS guest_orders,
-        (SELECT COUNT(*) FROM users WHERE role = 'buyer') AS registered_buyers,
-        (SELECT COALESCE(SUM(total_npr), 0) FROM orders WHERE status NOT IN ('cancelled','refunded')) AS gmv_npr,
-        (SELECT COALESCE(SUM(amount_npr), 0) FROM subscription_payments WHERE status = 'verified') AS sub_revenue_npr`
-    )
-    .get();
-
-  const mrrRow = db
-    .prepare(
-      `SELECT COALESCE(SUM(CASE WHEN s.billing_cycle = 'annual' THEN sp.annual_price_npr / 12.0 ELSE sp.monthly_price_npr END), 0) AS mrr_npr
-       FROM subscriptions s
-       JOIN subscription_plans sp ON sp.id = s.plan_id
-       WHERE s.status = 'active' AND s.ends_at > datetime('now')`
-    )
-    .get() as { mrr_npr: number };
-
-  const recentAudits = db
-    .prepare(
-      `SELECT al.*, u.full_name AS actor_name
-       FROM audit_logs al
-       LEFT JOIN users u ON u.id = al.actor_user_id
-       ORDER BY al.created_at DESC LIMIT 20`
-    )
-    .all();
+  const metrics = (metricsRes.data || {}) as Record<string, unknown>;
+  const recentAudits = (auditsRes.data || []).map((al: Record<string, unknown>) => {
+    const prof = (Array.isArray(al.profiles) ? al.profiles[0] : al.profiles) as { full_name?: string } | null;
+    const { profiles: _p, ...rest } = al;
+    return {
+      ...rest,
+      actor_name: prof?.full_name ?? null,
+    };
+  });
 
   res.json({
-    coopCounts,
-    subCounts,
-    marketplaceStats,
-    mrrNpr: Math.round(mrrRow.mrr_npr),
+    coopCounts: metrics.coopCounts || {},
+    subCounts: metrics.subCounts || {},
+    marketplaceStats: metrics.marketplaceStats || {},
+    mrrNpr: Number(metrics.mrrNpr || 0),
     recentAudits,
     smsConfigured: isAkashSmsConfigured(),
   });
 });
 
 // Cooperatives Administration
-adminRouter.get('/cooperatives', (_req, res) => {
-  const cooperatives = db
-    .prepare(
-      `SELECT c.*, u.full_name AS owner_name, u.email AS owner_email, u.phone AS owner_phone,
-              s.store_name_ne, s.store_name_en, s.is_published,
-              sub.id AS subscription_id, sub.status AS subscription_status, sub.ends_at AS subscription_ends_at,
-              sp.id AS plan_id, sp.name_ne AS plan_name_ne, sp.name_en AS plan_name_en
-       FROM cooperatives c
-       JOIN users u ON u.id = c.owner_user_id
-       LEFT JOIN stores s ON s.cooperative_id = c.id
-       LEFT JOIN subscriptions sub ON sub.id = (
-         SELECT id FROM subscriptions WHERE cooperative_id = c.id ORDER BY created_at DESC LIMIT 1
-       )
-       LEFT JOIN subscription_plans sp ON sp.id = sub.plan_id
-       ORDER BY CASE WHEN c.status = 'pending_review' THEN 0 ELSE 1 END, c.created_at DESC`
-    )
-    .all() as Record<string, unknown>[];
+adminRouter.get('/cooperatives', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
 
-  const enriched = cooperatives.map((c) => ({
-    ...c,
-    documents: db.prepare(`SELECT * FROM cooperative_documents WHERE cooperative_id = ?`).all(c.id),
-    history: db.prepare(`SELECT * FROM cooperative_status_history WHERE cooperative_id = ? ORDER BY created_at DESC`).all(c.id),
-  }));
+  const { data: coops } = await sb
+    .from('cooperatives')
+    .select(
+      `*,
+       profiles:owner_user_id (full_name, email, phone),
+       stores (store_name_ne, store_name_en, is_published),
+       subscriptions (id, status, ends_at, created_at, subscription_plans (id, name_ne, name_en)),
+       cooperative_documents (*),
+       cooperative_status_history (*)`
+    )
+    .order('created_at', { ascending: false });
+
+  const enriched = await Promise.all(
+    (coops || []).map(async (c: Record<string, unknown>) => {
+      const owner = (Array.isArray(c.profiles) ? c.profiles[0] : c.profiles) as Record<string, unknown> | null;
+      const store = (Array.isArray(c.stores) ? c.stores[0] : c.stores) as Record<string, unknown> | null;
+      const subs = ((c.subscriptions as Array<Record<string, unknown>>) || []).sort(
+        (a, b) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime()
+      );
+      const latestSub = subs[0];
+      const latestPlan = latestSub
+        ? ((Array.isArray(latestSub.subscription_plans)
+            ? latestSub.subscription_plans[0]
+            : latestSub.subscription_plans) as Record<string, unknown> | null)
+        : null;
+
+      const rawDocs = (c.cooperative_documents as Array<Record<string, unknown>>) || [];
+      const documents = await Promise.all(
+        rawDocs.map(async (d) => ({
+          ...d,
+          file_url: await resolveDocumentAccessUrl(String(d.file_url || '')),
+        }))
+      );
+      const history = ((c.cooperative_status_history as Array<Record<string, unknown>>) || []).sort(
+        (a, b) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime()
+      );
+
+      const {
+        profiles: _p,
+        stores: _st,
+        subscriptions: _su,
+        cooperative_documents: _cd,
+        cooperative_status_history: _ch,
+        ...rest
+      } = c;
+
+      return {
+        ...rest,
+        owner_name: owner?.full_name ?? null,
+        owner_email: owner?.email ?? null,
+        owner_phone: owner?.phone ?? null,
+        store_name_ne: store?.store_name_ne ?? null,
+        store_name_en: store?.store_name_en ?? null,
+        is_published: store?.is_published ?? false,
+        subscription_id: latestSub?.id ?? null,
+        subscription_status: latestSub?.status ?? null,
+        subscription_ends_at: latestSub?.ends_at ?? null,
+        plan_id: latestPlan?.id ?? null,
+        plan_name_ne: latestPlan?.name_ne ?? null,
+        plan_name_en: latestPlan?.name_en ?? null,
+        documents,
+        history,
+      };
+    })
+  );
+
+  enriched.sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
+    const aPend = a.status === 'pending_review' ? 0 : 1;
+    const bPend = b.status === 'pending_review' ? 0 : 1;
+    return aPend - bPend;
+  });
 
   res.json({ cooperatives: enriched });
 });
@@ -105,274 +126,202 @@ adminRouter.post('/cooperatives/:id/decision', async (req, res) => {
     return res.status(400).json({ error: 'अमान्य स्थिति।' });
   }
 
-  const coop = db.prepare(`SELECT * FROM cooperatives WHERE id = ?`).get(req.params.id) as
-    | { id: string; status: string; owner_user_id: string; contact_phone: string; name_ne: string; name_en: string }
-    | undefined;
-  if (!coop) return res.status(404).json({ error: 'सहकारी फेला परेन।' });
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb.rpc('approve_or_reject_cooperative', {
+    p_cooperative_id: req.params.id,
+    p_decision: status,
+    p_reason: reason || null,
+    p_plan_id: planId || null,
+    p_duration_days: Number(trialDays || 0),
+    p_actor_user_id: req.authUser!.id,
+  });
 
-  db.transaction(() => {
-    db.prepare(
-      `UPDATE cooperatives SET
-        status = ?,
-        rejection_reason = ?,
-        approved_at = CASE WHEN ? = 'approved' THEN datetime('now') ELSE approved_at END,
-        approved_by = CASE WHEN ? = 'approved' THEN ? ELSE approved_by END,
-        updated_at = datetime('now')
-       WHERE id = ?`
-    ).run(status, reason || null, status, status, req.authUser!.id, coop.id);
+  if (error) {
+    return res.status(error.message.includes('फेला परेन') ? 404 : 400).json({ error: error.message });
+  }
 
-    db.prepare(
-      `INSERT INTO cooperative_status_history (id, cooperative_id, from_status, to_status, reason, changed_by)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(crypto.randomUUID(), coop.id, coop.status, status, reason || `Admin decision: ${status}`, req.authUser!.id);
-
-    if (status === 'approved') {
-      // Activate initial subscription (Free Trial or selected plan)
-      const existingSub = db
-        .prepare(`SELECT id FROM subscriptions WHERE cooperative_id = ? AND status IN ('trial','active') AND ends_at > datetime('now')`)
-        .get(coop.id);
-      if (!existingSub) {
-        const chosenPlan = (planId
-          ? db.prepare(`SELECT * FROM subscription_plans WHERE id = ?`).get(planId)
-          : db.prepare(`SELECT * FROM subscription_plans WHERE code = 'free_trial' LIMIT 1`).get()) as
-          | { id: string; trial_days: number }
-          | undefined;
-
-        if (chosenPlan) {
-          const days = Number(trialDays || chosenPlan.trial_days || 30);
-          db.prepare(
-            `INSERT INTO subscriptions (id, cooperative_id, plan_id, billing_cycle, status, starts_at, ends_at, assigned_by)
-             VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now', ?), ?)`
-          ).run(
-            crypto.randomUUID(),
-            coop.id,
-            chosenPlan.id,
-            days > 0 && chosenPlan.trial_days > 0 ? 'trial' : 'monthly',
-            days > 0 && chosenPlan.trial_days > 0 ? 'trial' : 'active',
-            `+${days} days`,
-            req.authUser!.id
-          );
-        }
-      }
-      db.prepare(`UPDATE stores SET is_published = 1, published_at = COALESCE(published_at, datetime('now')) WHERE cooperative_id = ?`).run(
-        coop.id
-      );
-      db.prepare(`UPDATE cooperative_documents SET verified_status = 'verified', verified_by = ?, verified_at = datetime('now') WHERE cooperative_id = ?`).run(
-        req.authUser!.id,
-        coop.id
-      );
-    }
-
-    db.prepare(
-      `INSERT INTO notifications (id, cooperative_id, recipient_user_id, type, title_ne, title_en, body_ne, body_en, action_url)
-       VALUES (?, ?, ?, 'coop_decision', ?, ?, ?, ?, '/cooperative')`
-    ).run(
-      crypto.randomUUID(),
-      coop.id,
-      coop.owner_user_id,
-      status === 'approved' ? 'सहकारी स्वीकृत भयो!' : 'सहकारी स्थिति अद्यावधिक',
-      status === 'approved' ? 'Cooperative Approved!' : 'Cooperative Status Updated',
-      `${coop.name_ne} को स्थिति "${status}" मा अद्यावधिक भयो।`,
-      `${coop.name_en} status updated to "${status}".`
-    );
-
-    writeAuditLog({
-      actorUserId: req.authUser!.id,
-      actorRole: 'super_admin',
-      cooperativeId: coop.id,
-      action: `cooperative_${status}`,
-      entityType: 'cooperative',
-      entityId: coop.id,
-      metadata: { reason },
-      ipAddress: req.ip,
-    });
-  })();
-
-  if (coop.contact_phone) {
+  const coopInfo = (data || {}) as { contact_phone?: string; name_ne?: string };
+  if (coopInfo.contact_phone) {
     await sendAkashSms({
-      to: coop.contact_phone,
+      to: coopInfo.contact_phone,
       text:
         status === 'approved'
-          ? `बधाई छ! तपाईंको सहकारी "${coop.name_ne}" सहकारी बजारमा स्वीकृत र प्रकाशित भएको छ।`
+          ? `बधाई छ! तपाईंको सहकारी "${coopInfo.name_ne}" सहकारी बजारमा स्वीकृत र प्रकाशित भएको छ।`
           : `सहकारी बजार सूचना: तपाईंको सहकारी स्थिति "${status}" मा अद्यावधिक गरिएको छ।`,
       purpose: 'cooperative_decision',
-      cooperativeId: coop.id,
+      cooperativeId: req.params.id,
     });
   }
 
   res.json({ ok: true });
 });
 
-adminRouter.patch('/cooperatives/:id/featured', (req, res) => {
-  db.prepare(`UPDATE cooperatives SET is_featured = ? WHERE id = ?`).run(req.body?.isFeatured ? 1 : 0, req.params.id);
+adminRouter.patch('/cooperatives/:id/featured', async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  await sb.from('cooperatives').update({ is_featured: Boolean(req.body?.isFeatured) }).eq('id', req.params.id);
   res.json({ ok: true });
 });
 
-adminRouter.post('/cooperatives/:id/assign-subscription', (req, res) => {
+adminRouter.post('/cooperatives/:id/assign-subscription', async (req, res) => {
   const { planId, billingCycle, extendDays } = req.body || {};
-  const plan = db.prepare(`SELECT * FROM subscription_plans WHERE id = ?`).get(planId);
-  if (!plan) return res.status(404).json({ error: 'योजना फेला परेन।' });
-
-  const days = Number(extendDays || (billingCycle === 'annual' ? 365 : 30));
-  db.transaction(() => {
-    db.prepare(`UPDATE subscriptions SET status = 'cancelled' WHERE cooperative_id = ? AND status IN ('trial','active')`).run(
-      req.params.id
-    );
-    db.prepare(
-      `INSERT INTO subscriptions (id, cooperative_id, plan_id, billing_cycle, status, starts_at, ends_at, assigned_by)
-       VALUES (?, ?, ?, ?, 'active', datetime('now'), datetime('now', ?), ?)`
-    ).run(crypto.randomUUID(), req.params.id, planId, billingCycle || 'monthly', `+${days} days`, req.authUser!.id);
-    writeAuditLog({
-      actorUserId: req.authUser!.id,
-      actorRole: 'super_admin',
-      cooperativeId: req.params.id,
-      action: 'subscription_assigned',
-      entityType: 'subscription',
-      entityId: planId,
-      metadata: { days, billingCycle },
-      ipAddress: req.ip,
-    });
-  })();
+  const sb = requireSupabaseAdmin();
+  const { error } = await sb.rpc('assign_coop_subscription', {
+    p_cooperative_id: req.params.id,
+    p_plan_id: planId,
+    p_billing_cycle: billingCycle || 'monthly',
+    p_duration_days: Number(extendDays || 0),
+    p_actor_user_id: req.authUser!.id,
+  });
+  if (error) {
+    return res.status(404).json({ error: error.message });
+  }
   res.json({ ok: true });
 });
 
 // Subscription Plans & Payments
-adminRouter.get('/plans', (_req, res) => {
-  const plans = db.prepare(`SELECT * FROM subscription_plans ORDER BY sort_order ASC`).all();
-  const payments = db
-    .prepare(
-      `SELECT sp.*, c.name_ne AS cooperative_name_ne, c.name_en AS cooperative_name_en,
-              pl.name_ne AS plan_name_ne, pl.name_en AS plan_name_en
-       FROM subscription_payments sp
-       JOIN cooperatives c ON c.id = sp.cooperative_id
-       JOIN subscription_plans pl ON pl.id = sp.plan_id
-       ORDER BY sp.created_at DESC`
-    )
-    .all();
-  res.json({ plans, payments });
+adminRouter.get('/plans', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const [plansRes, paysRes] = await Promise.all([
+    sb.from('subscription_plans').select('*').order('sort_order', { ascending: true }),
+    sb
+      .from('subscription_payments')
+      .select('*, cooperatives (name_ne, name_en), subscription_plans (name_ne, name_en)')
+      .order('created_at', { ascending: false }),
+  ]);
+
+  const payments = (paysRes.data || []).map((sp: Record<string, unknown>) => {
+    const coop = (Array.isArray(sp.cooperatives) ? sp.cooperatives[0] : sp.cooperatives) as Record<string, unknown> | null;
+    const plan = (Array.isArray(sp.subscription_plans)
+      ? sp.subscription_plans[0]
+      : sp.subscription_plans) as Record<string, unknown> | null;
+    const { cooperatives: _c, subscription_plans: _pl, ...rest } = sp;
+    return {
+      ...rest,
+      cooperative_name_ne: coop?.name_ne ?? null,
+      cooperative_name_en: coop?.name_en ?? null,
+      plan_name_ne: plan?.name_ne ?? null,
+      plan_name_en: plan?.name_en ?? null,
+    };
+  });
+
+  res.json({ plans: plansRes.data || [], payments });
 });
 
-adminRouter.post('/plans', (req, res) => {
+adminRouter.post('/plans', async (req, res) => {
   const b = req.body || {};
   if (!b.code || !b.nameNe || !b.nameEn) {
     return res.status(400).json({ error: 'योजना कोड र नाम आवश्यक छ।' });
   }
-  const id = crypto.randomUUID();
-  try {
-    db.prepare(
-      `INSERT INTO subscription_plans (id, code, name_ne, name_en, description_ne, description_en, monthly_price_npr, annual_price_npr, trial_days, max_products, max_staff, max_storage_mb, features_json, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      id,
-      String(b.code).trim().toLowerCase(),
-      b.nameNe,
-      b.nameEn,
-      b.descriptionNe || '',
-      b.descriptionEn || '',
-      Number(b.monthlyPriceNpr || 0),
-      Number(b.annualPriceNpr || 0),
-      Number(b.trialDays || 0),
-      Number(b.maxProducts || 25),
-      Number(b.maxStaff || 3),
-      Number(b.maxStorageMb || 500),
-      JSON.stringify(b.features || {}),
-      Number(b.sortOrder || 10)
-    );
-    res.status(201).json({ id });
-  } catch {
-    res.status(400).json({ error: 'योजना कोड पहिले नै छ।' });
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb
+    .from('subscription_plans')
+    .insert({
+      code: String(b.code).trim().toLowerCase(),
+      name_ne: b.nameNe,
+      name_en: b.nameEn,
+      description_ne: b.descriptionNe || '',
+      description_en: b.descriptionEn || '',
+      monthly_price_npr: Number(b.monthlyPriceNpr || 0),
+      annual_price_npr: Number(b.annualPriceNpr || 0),
+      trial_days: Number(b.trialDays || 0),
+      max_products: Number(b.maxProducts || 25),
+      max_staff: Number(b.maxStaff || 3),
+      max_storage_mb: Number(b.maxStorageMb || 500),
+      features_json: b.features || {},
+      sort_order: Number(b.sortOrder || 10),
+    })
+    .select('id')
+    .single();
+
+  if (error) {
+    return res.status(400).json({ error: 'योजना कोड पहिले नै छ।' });
   }
+  res.status(201).json({ id: data.id });
 });
 
-adminRouter.post('/subscription-payments/:id/verify', (req, res) => {
+adminRouter.post('/subscription-payments/:id/verify', async (req, res) => {
   const { decision } = req.body || {};
-  const payment = db.prepare(`SELECT * FROM subscription_payments WHERE id = ?`).get(req.params.id) as
-    | { id: string; cooperative_id: string; plan_id: string; billing_cycle: string }
-    | undefined;
-  if (!payment) return res.status(404).json({ error: 'भुक्तानी फेला परेन।' });
-
-  const status = decision === 'verified' ? 'verified' : 'rejected';
-  db.transaction(() => {
-    db.prepare(
-      `UPDATE subscription_payments SET status = ?, verified_by = ?, verified_at = datetime('now') WHERE id = ?`
-    ).run(status, req.authUser!.id, payment.id);
-
-    if (status === 'verified') {
-      const days = payment.billing_cycle === 'annual' ? 365 : 30;
-      db.prepare(`UPDATE subscriptions SET status = 'cancelled' WHERE cooperative_id = ? AND status IN ('trial','active')`).run(
-        payment.cooperative_id
-      );
-      db.prepare(
-        `INSERT INTO subscriptions (id, cooperative_id, plan_id, billing_cycle, status, starts_at, ends_at, assigned_by)
-         VALUES (?, ?, ?, ?, 'active', datetime('now'), datetime('now', ?), ?)`
-      ).run(
-        crypto.randomUUID(),
-        payment.cooperative_id,
-        payment.plan_id,
-        payment.billing_cycle,
-        `+${days} days`,
-        req.authUser!.id
-      );
-    }
-  })();
-
+  const sb = requireSupabaseAdmin();
+  const { error } = await sb.rpc('verify_subscription_payment', {
+    p_payment_id: req.params.id,
+    p_decision: decision || 'rejected',
+    p_actor_user_id: req.authUser!.id,
+  });
+  if (error) {
+    return res.status(404).json({ error: error.message });
+  }
   res.json({ ok: true });
 });
 
 // Global Marketplace & Product Moderation
-adminRouter.get('/marketplace-controls', (_req, res) => {
-  const categories = db.prepare(`SELECT * FROM global_categories ORDER BY sort_order ASC`).all();
-  const products = db
-    .prepare(
-      `SELECT p.*, c.name_ne AS cooperative_name_ne, c.name_en AS cooperative_name_en,
-              (SELECT image_url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.is_primary DESC LIMIT 1) AS image_url
-       FROM products p
-       JOIN cooperatives c ON c.id = p.cooperative_id
-       ORDER BY p.created_at DESC LIMIT 100`
-    )
-    .all();
-  const branding = db.prepare(`SELECT value_json FROM platform_settings WHERE key = 'branding'`).get() as
-    | { value_json: string }
-    | undefined;
+adminRouter.get('/marketplace-controls', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const [catsRes, prodsRes, brandRes] = await Promise.all([
+    sb.from('global_categories').select('*').order('sort_order', { ascending: true }),
+    sb
+      .from('products')
+      .select('*, cooperatives (name_ne, name_en), product_images (image_url, is_primary)')
+      .order('created_at', { ascending: false })
+      .limit(100),
+    sb.from('platform_settings').select('value_json').eq('key', 'branding').maybeSingle(),
+  ]);
+
+  const products = (prodsRes.data || []).map((p: Record<string, unknown>) => {
+    const coop = (Array.isArray(p.cooperatives) ? p.cooperatives[0] : p.cooperatives) as Record<string, unknown> | null;
+    const imgs = (p.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
+    const { cooperatives: _c, product_images: _pi, ...rest } = p;
+    return {
+      ...rest,
+      cooperative_name_ne: coop?.name_ne ?? null,
+      cooperative_name_en: coop?.name_en ?? null,
+      image_url: imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null,
+    };
+  });
+
   res.json({
-    categories,
+    categories: catsRes.data || [],
     products,
-    branding: branding ? JSON.parse(branding.value_json) : {},
+    branding: brandRes.data ? parseJsonField(brandRes.data.value_json, {}) : {},
   });
 });
 
-adminRouter.post('/categories', (req, res) => {
+adminRouter.post('/categories', async (req, res) => {
   const { nameNe, nameEn, slug, descriptionNe, descriptionEn } = req.body || {};
   if (!nameNe || !nameEn) return res.status(400).json({ error: 'नेपाली र अंग्रेजी नाम आवश्यक छ।' });
-  const id = crypto.randomUUID();
+  const sb = requireSupabaseAdmin();
   const safeSlug =
     slug ||
     String(nameEn)
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
-  db.prepare(
-    `INSERT INTO global_categories (id, slug, name_ne, name_en, description_ne, description_en) VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, `${safeSlug}-${crypto.randomBytes(2).toString('hex')}`, nameNe, nameEn, descriptionNe || '', descriptionEn || '');
-  res.status(201).json({ id });
+
+  const { data, error } = await sb
+    .from('global_categories')
+    .insert({
+      slug: `${safeSlug}-${Math.random().toString(16).slice(2, 6)}`,
+      name_ne: nameNe,
+      name_en: nameEn,
+      description_ne: descriptionNe || '',
+      description_en: descriptionEn || '',
+    })
+    .select('id')
+    .single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ id: data.id });
 });
 
-adminRouter.patch('/products/:id/moderate', (req, res) => {
+adminRouter.patch('/products/:id/moderate', async (req, res) => {
   const { isProhibited, prohibitionReason, isPlatformFeatured } = req.body || {};
-  db.prepare(
-    `UPDATE products SET
-      is_prohibited = COALESCE(?, is_prohibited),
-      prohibition_reason = COALESCE(?, prohibition_reason),
-      is_platform_featured = COALESCE(?, is_platform_featured),
-      updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(
-    isProhibited !== undefined ? (isProhibited ? 1 : 0) : null,
-    prohibitionReason ?? null,
-    isPlatformFeatured !== undefined ? (isPlatformFeatured ? 1 : 0) : null,
-    req.params.id
-  );
-  writeAuditLog({
+  const sb = requireSupabaseAdmin();
+  const updatePayload: Record<string, unknown> = {};
+  if (isProhibited !== undefined) updatePayload.is_prohibited = Boolean(isProhibited);
+  if (prohibitionReason !== undefined) updatePayload.prohibition_reason = prohibitionReason;
+  if (isPlatformFeatured !== undefined) updatePayload.is_platform_featured = Boolean(isPlatformFeatured);
+
+  await sb.from('products').update(updatePayload).eq('id', req.params.id);
+
+  await writeAuditLog({
     actorUserId: req.authUser!.id,
     actorRole: 'super_admin',
     action: 'product_moderated',
@@ -384,76 +333,107 @@ adminRouter.patch('/products/:id/moderate', (req, res) => {
   res.json({ ok: true });
 });
 
-adminRouter.put('/settings/branding', (req, res) => {
-  db.prepare(
-    `INSERT INTO platform_settings (key, value_json, updated_by, updated_at)
-     VALUES ('branding', ?, ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = datetime('now')`
-  ).run(JSON.stringify(req.body || {}), req.authUser!.id);
+adminRouter.put('/settings/branding', async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  await sb.from('platform_settings').upsert(
+    {
+      key: 'branding',
+      value_json: req.body || {},
+      updated_by: req.authUser!.id,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'key' }
+  );
   res.json({ ok: true });
 });
 
 // Users, Support, Audit, Login & SMS Logs
-adminRouter.get('/users', (_req, res) => {
-  const users = db
-    .prepare(`SELECT id, full_name, full_name_ne, email, phone, role, is_active, last_login_at, created_at FROM users ORDER BY created_at DESC LIMIT 100`)
-    .all();
-  res.json({ users });
+adminRouter.get('/users', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data: users } = await sb
+    .from('profiles')
+    .select('id, full_name, full_name_ne, email, phone, role, is_active, last_login_at, created_at')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  res.json({ users: users || [] });
 });
 
-adminRouter.patch('/users/:id/toggle-active', (req, res) => {
+adminRouter.patch('/users/:id/toggle-active', async (req, res) => {
   if (req.params.id === req.authUser!.id) {
     return res.status(400).json({ error: 'आफ्नै खाता निष्क्रिय गर्न मिल्दैन।' });
   }
-  db.prepare(`UPDATE users SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE id = ?`).run(req.params.id);
+  const sb = requireSupabaseAdmin();
+  const { data: u } = await sb.from('profiles').select('is_active').eq('id', req.params.id).maybeSingle();
+  if (!u) return res.status(404).json({ error: 'प्रयोगकर्ता फेला परेन।' });
+  await sb.from('profiles').update({ is_active: !u.is_active }).eq('id', req.params.id);
   res.json({ ok: true });
 });
 
-adminRouter.get('/logs', (_req, res) => {
-  const auditLogs = db
-    .prepare(
-      `SELECT al.*, u.full_name AS actor_name
-       FROM audit_logs al LEFT JOIN users u ON u.id = al.actor_user_id
-       ORDER BY al.created_at DESC LIMIT 80`
-    )
-    .all();
-  const loginActivities = db.prepare(`SELECT * FROM login_activities ORDER BY created_at DESC LIMIT 60`).all();
-  const smsLogs = db.prepare(`SELECT * FROM sms_logs ORDER BY created_at DESC LIMIT 60`).all();
-  const tickets = (
-    db
-      .prepare(
-        `SELECT st.*, c.name_ne AS cooperative_name_ne, c.name_en AS cooperative_name_en
-         FROM support_tickets st
-         LEFT JOIN cooperatives c ON c.id = st.cooperative_id
-         ORDER BY st.updated_at DESC`
-      )
-      .all() as Record<string, unknown>[]
-  ).map((t) => ({
-      ...t,
-      messages: db.prepare(`SELECT * FROM support_messages WHERE ticket_id = ? ORDER BY created_at ASC`).all(t.id),
-    }));
+adminRouter.get('/logs', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const [auditRes, loginRes, smsRes, ticketsRes] = await Promise.all([
+    sb
+      .from('audit_logs')
+      .select('*, profiles:actor_user_id (full_name)')
+      .order('created_at', { ascending: false })
+      .limit(80),
+    sb.from('login_activities').select('*').order('created_at', { ascending: false }).limit(60),
+    sb.from('sms_logs').select('*').order('created_at', { ascending: false }).limit(60),
+    sb
+      .from('support_tickets')
+      .select('*, cooperatives (name_ne, name_en), support_messages (*)')
+      .order('updated_at', { ascending: false }),
+  ]);
 
-  res.json({ auditLogs, loginActivities, smsLogs, tickets, smsConfigured: isAkashSmsConfigured() });
+  const auditLogs = (auditRes.data || []).map((al: Record<string, unknown>) => {
+    const prof = (Array.isArray(al.profiles) ? al.profiles[0] : al.profiles) as { full_name?: string } | null;
+    const { profiles: _p, ...rest } = al;
+    return { ...rest, actor_name: prof?.full_name ?? null };
+  });
+
+  const tickets = (ticketsRes.data || []).map((t: Record<string, unknown>) => {
+    const coop = (Array.isArray(t.cooperatives) ? t.cooperatives[0] : t.cooperatives) as Record<string, unknown> | null;
+    const msgs = ((t.support_messages as Array<Record<string, unknown>>) || []).sort(
+      (a, b) => new Date(String(a.created_at)).getTime() - new Date(String(b.created_at)).getTime()
+    );
+    const { cooperatives: _c, support_messages: _sm, ...rest } = t;
+    return {
+      ...rest,
+      cooperative_name_ne: coop?.name_ne ?? null,
+      cooperative_name_en: coop?.name_en ?? null,
+      messages: msgs,
+    };
+  });
+
+  res.json({
+    auditLogs,
+    loginActivities: loginRes.data || [],
+    smsLogs: smsRes.data || [],
+    tickets,
+    smsConfigured: isAkashSmsConfigured(),
+  });
 });
 
-adminRouter.post('/tickets/:id/reply', (req, res) => {
+adminRouter.post('/tickets/:id/reply', async (req, res) => {
   const { message, status } = req.body || {};
   if (!message) return res.status(400).json({ error: 'सन्देश आवश्यक छ।' });
-  db.transaction(() => {
-    db.prepare(
-      `INSERT INTO support_messages (id, ticket_id, sender_user_id, sender_role, message)
-       VALUES (?, ?, ?, 'super_admin', ?)`
-    ).run(crypto.randomUUID(), req.params.id, req.authUser!.id, message);
-    db.prepare(`UPDATE support_tickets SET status = COALESCE(?, 'in_progress'), updated_at = datetime('now') WHERE id = ?`).run(
-      status || null,
-      req.params.id
-    );
-  })();
+  const sb = requireSupabaseAdmin();
+
+  await sb.from('support_messages').insert({
+    ticket_id: req.params.id,
+    sender_user_id: req.authUser!.id,
+    sender_role: 'super_admin',
+    message,
+  });
+  await sb
+    .from('support_tickets')
+    .update({ status: status || 'in_progress', updated_at: new Date().toISOString() })
+    .eq('id', req.params.id);
+
   res.json({ ok: true });
 });
 
 adminRouter.get('/integrations-status', async (_req, res) => {
-  const { verifySupabaseConnection } = await import('../supabase-admin.ts');
   const supabase = await verifySupabaseConnection();
   res.json({
     supabase,
@@ -477,4 +457,3 @@ adminRouter.post('/test-sms', async (req, res) => {
   });
   res.status(result.sent ? 200 : 400).json(result);
 });
-
