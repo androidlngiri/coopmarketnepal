@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Router } from 'express';
-import { db } from '../db.ts';
+import { db, UPLOADS_DIR } from '../db.ts';
 import { createSession, hashPassword, rateLimit, requireAuth, writeAuditLog } from '../auth.ts';
 import { issueOtp, normalizeNepalPhone, verifyOtpCode } from '../akash-sms.ts';
 
@@ -26,9 +26,8 @@ function saveBase64Upload(dataUrl: string, prefix: string): { url: string; size:
   }
   const ext = mime === 'application/pdf' ? 'pdf' : mime.split('/')[1];
   const fileName = `${prefix}-${crypto.randomUUID()}.${ext}`;
-  const uploadDir = path.join(process.cwd(), 'uploads');
-  fs.mkdirSync(uploadDir, { recursive: true });
-  fs.writeFileSync(path.join(uploadDir, fileName), buffer);
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(UPLOADS_DIR, fileName), buffer);
   return { url: `/uploads/${fileName}`, size: buffer.length };
 }
 

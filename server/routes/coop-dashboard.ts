@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Router } from 'express';
-import { db } from '../db.ts';
+import { db, UPLOADS_DIR } from '../db.ts';
 import { hashPassword, requireCooperativeAccess, writeAuditLog } from '../auth.ts';
 import { normalizeNepalPhone, sendAkashSms } from '../akash-sms.ts';
 
@@ -14,9 +14,8 @@ function saveImageUpload(dataUrl: string, prefix: string): string {
   const buffer = Buffer.from(match[2], 'base64');
   if (buffer.length > 5 * 1024 * 1024) throw new Error('छवि साइज ५ MB भन्दा कम हुनुपर्छ।');
   const fileName = `${prefix}-${crypto.randomUUID()}.${match[1].split('/')[1]}`;
-  const dir = path.join(process.cwd(), 'uploads');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, fileName), buffer);
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(UPLOADS_DIR, fileName), buffer);
   return `/uploads/${fileName}`;
 }
 
