@@ -459,7 +459,10 @@ adminRouter.get('/integrations-status', async (_req, res) => {
     supabase,
     akashSms: {
       configured: isAkashSmsConfigured(),
-      endpoint: process.env.AKASH_SMS_API_URL || 'https://sms.aakashsms.com/sms/v3/send',
+      endpoint:
+        process.env.AAKASH_SMS_ENDPOINT ||
+        process.env.AKASH_SMS_API_URL ||
+        'https://sms.aakashsms.com/sms/v3/send',
     },
   });
 });

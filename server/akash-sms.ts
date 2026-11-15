@@ -9,10 +9,19 @@ export interface SmsSendResult {
   providerResponse?: string;
 }
 
-const AKASH_API_URL = process.env.AKASH_SMS_API_URL || 'https://sms.aakashsms.com/sms/v3/send';
+const AKASH_API_URL = (
+  process.env.AAKASH_SMS_ENDPOINT ||
+  process.env.AKASH_SMS_API_URL ||
+  'https://sms.aakashsms.com/sms/v3/send'
+).trim();
 
 function getAkashAuthToken(): string {
-  return (process.env.AKASH_SMS_API_KEY || process.env.AKASH_SMS_AUTH_TOKEN || '').trim();
+  return (
+    process.env.AAKASH_SMS_AUTH_TOKEN ||
+    process.env.AKASH_SMS_API_KEY ||
+    process.env.AKASH_SMS_AUTH_TOKEN ||
+    ''
+  ).trim();
 }
 
 export function isAkashSmsConfigured(): boolean {
