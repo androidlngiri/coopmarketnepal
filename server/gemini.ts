@@ -1,6 +1,6 @@
-import { GoogleGenAI, Type, type Schema } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type, type Schema } from '@google/genai';
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 export function getGeminiModel(): string {
   const configured = process.env.GEMINI_MODEL?.trim();
@@ -358,8 +358,9 @@ STRICT ACCURACY & SAFETY RULES:
     .filter(Boolean)
     .join('\n');
 
-  const timeoutMs = 35_000;
+  const timeoutMs = 26_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const thinkingLevel = model.includes('flash-lite') ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
 
   try {
     const response = await Promise.race([
@@ -370,6 +371,7 @@ STRICT ACCURACY & SAFETY RULES:
           systemInstruction,
           responseMimeType: 'application/json',
           responseSchema: productResponseSchema,
+          thinkingConfig: { thinkingLevel },
         },
       }),
       new Promise<never>((_resolve, reject) => {
