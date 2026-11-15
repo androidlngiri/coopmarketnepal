@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ShieldCheck, Truck } from 'lucide-react';
+import { CheckCircle2, Copy, MapPin, Printer, ShieldCheck, Truck } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { formatNPR, NEPAL_PROVINCES, toNepaliDigits } from '../lib/bs-date';
@@ -31,6 +31,8 @@ interface ValidatedGroup {
   deliveryFee: number;
   total: number;
   promoCode: string | null;
+  promoApplied?: boolean;
+  promoError?: string | null;
   deliveryMode: 'delivery' | 'pickup';
 }
 
@@ -45,6 +47,18 @@ interface CreatedOrderSummary {
   paymentMethod: string;
 }
 
+interface SavedAddress {
+  id: string;
+  label: string;
+  recipient_name: string;
+  phone: string;
+  province: string;
+  district: string;
+  municipality: string;
+  ward_number: string;
+  street_address: string;
+}
+
 export function CheckoutPage() {
   const { lang, cart, clearCart, user, navigate } = useApp();
   const [groups, setGroups] = useState<ValidatedGroup[]>([]);
@@ -54,6 +68,7 @@ export function CheckoutPage() {
   >({});
   const [validating, setValidating] = useState(false);
   const [validationError, setValidationError] = useState('');
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
 
   const [customerName, setCustomerName] = useState(user?.full_name || '');
   const [customerPhone, setCustomerPhone] = useState(user?.phone || '');
@@ -68,12 +83,38 @@ export function CheckoutPage() {
   const [paymentReference, setPaymentReference] = useState('');
   const [requireOtp, setRequireOtp] = useState(false);
   const [otpCode, setOtpCode] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
   const [otpNotice, setOtpNotice] = useState('');
   const [placing, setPlacing] = useState(false);
   const [confirmedOrders, setConfirmedOrders] = useState<CreatedOrderSummary[] | null>(null);
 
   const idempotencyKey = useMemo(() => `idem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, []);
   const districts = NEPAL_PROVINCES[province]?.districts || [];
+
+  useEffect(() => {
+    if (user) {
+      if (!customerName && user.full_name) setCustomerName(user.full_name);
+      if (!customerPhone && user.phone) setCustomerPhone(user.phone);
+      if (!customerEmail && user.email) setCustomerEmail(user.email);
+      apiFetch<{ addresses: SavedAddress[] }>('/api/buyer/addresses').then((res) => {
+        if (res.ok) setSavedAddresses(res.data.addresses || []);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  const applySavedAddress = (a: SavedAddress) => {
+    setCustomerName(a.recipient_name || customerName);
+    setCustomerPhone(a.phone || customerPhone);
+    if (NEPAL_PROVINCES[a.province]) {
+      setProvince(a.province);
+    }
+    setDistrict(a.district);
+    setMunicipality(a.municipality);
+    setWard(a.ward_number);
+    setAddress(a.street_address);
+    toast.success(lang === 'ne' ? `"${a.label}" ठेगाना भरियो।` : `Filled "${a.label}" address.`);
+  };
 
   const revalidate = async (nextOptions = coopOptions) => {
     if (cart.length === 0) return;
@@ -101,10 +142,17 @@ export function CheckoutPage() {
   }, [cart.length]);
 
   const sendCheckoutOtp = async () => {
+    if (!customerPhone.trim()) {
+      toast.error(lang === 'ne' ? 'पहिले मोबाइल नम्बर प्रविष्ट गर्नुहोस्।' : 'Enter mobile number first.');
+      return;
+    }
+    setOtpSending(true);
+    setOtpNotice('');
     const res = await apiFetch<{ localOtpNotice?: string }>('/api/auth/otp/request', {
       method: 'POST',
       body: JSON.stringify({ phone: customerPhone, purpose: 'guest_checkout' }),
     });
+    setOtpSending(false);
     if (!res.ok) {
       toast.error(res.error || 'OTP पठाउन सकिएन।');
       return;
@@ -151,18 +199,24 @@ export function CheckoutPage() {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 space-y-6">
         <div className="bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-5">
-          <div className="flex items-center gap-3 text-[#15803D]">
-            <CheckCircle2 className="w-7 h-7" />
-            <div>
-              <h1 className="font-display text-2xl font-bold text-[#0F172A]">
-                {lang === 'ne' ? 'तपाईंको अर्डर पुष्टि भयो!' : 'Order Confirmed!'}
-              </h1>
-              <p className="text-xs text-[#57534E]">
-                {lang === 'ne'
-                  ? `प्रत्येक सहकारीको लागि छुट्टाछुट्टै ${toNepaliDigits(confirmedOrders.length)} अर्डर सिर्जना गरिएको छ।`
-                  : `${confirmedOrders.length} cooperative order(s) created from your cart.`}
-              </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 text-[#15803D]">
+              <CheckCircle2 className="w-7 h-7" />
+              <div>
+                <h1 className="font-display text-2xl font-bold text-[#0F172A]">
+                  {lang === 'ne' ? 'तपाईंको अर्डर पुष्टि भयो!' : 'Order Confirmed!'}
+                </h1>
+                <p className="text-xs text-[#57534E]">
+                  {lang === 'ne'
+                    ? `प्रत्येक सहकारीको लागि छुट्टाछुट्टै ${toNepaliDigits(confirmedOrders.length)} अर्डर सिर्जना गरिएको छ।`
+                    : `${confirmedOrders.length} cooperative order(s) created from your cart.`}
+                </p>
+              </div>
             </div>
+            <Button size="sm" variant="outline" onClick={() => window.print()}>
+              <Printer className="w-3.5 h-3.5" />
+              {lang === 'ne' ? 'प्रिन्ट' : 'Print'}
+            </Button>
           </div>
 
           <div className="space-y-3">
@@ -180,9 +234,22 @@ export function CheckoutPage() {
                   <span className="font-bold text-sm text-[#0F172A] tabular-nums">{formatNPR(o.totalNpr, lang)}</span>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#E5E2DC] text-xs">
-                  <span className="font-mono text-[#78716C] truncate max-w-xs">
-                    Token: {o.guestAccessToken}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[#78716C] truncate max-w-[200px]">
+                      Token: {o.guestAccessToken}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(o.guestAccessToken);
+                        toast.success(lang === 'ne' ? 'टोकन कपी भयो।' : 'Token copied.');
+                      }}
+                      className="text-[#0F172A] hover:text-[#B91C1C] inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      {lang === 'ne' ? 'कपी' : 'Copy'}
+                    </button>
+                  </div>
                   <Button
                     size="sm"
                     variant="outline"
@@ -195,10 +262,15 @@ export function CheckoutPage() {
             ))}
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <Button onClick={() => navigate('/marketplace')}>
               {lang === 'ne' ? 'बजारमा फर्कनुहोस्' : 'Continue Shopping'}
             </Button>
+            {user && (
+              <Button variant="outline" onClick={() => navigate('/account')}>
+                {lang === 'ne' ? 'मेरो अर्डरहरू हेर्नुहोस्' : 'View My Orders'}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -242,6 +314,22 @@ export function CheckoutPage() {
                 ? 'दर्ता अनिवार्य छैन — अतिथिको रूपमा सीधै अर्डर गर्न सक्नुहुन्छ।'
                 : 'Guest checkout supported — no registration required.'}
             </p>
+
+            {savedAddresses.length > 0 && (
+              <div className="p-3 rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] space-y-2">
+                <p className="text-xs font-medium text-[#0F172A] flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-[#B91C1C]" />
+                  {lang === 'ne' ? 'सुरक्षित ठेगानाबाट भर्नुहोस्:' : 'Quick-fill from saved addresses:'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {savedAddresses.map((a) => (
+                    <Button key={a.id} type="button" size="sm" variant="outline" onClick={() => applySavedAddress(a)}>
+                      {a.label} · {a.district}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -344,8 +432,14 @@ export function CheckoutPage() {
                       placeholder="6-digit OTP"
                       className="max-w-[160px] font-mono"
                     />
-                    <Button type="button" variant="outline" size="sm" onClick={sendCheckoutOtp}>
-                      {lang === 'ne' ? 'OTP पठाउनुहोस्' : 'Send OTP'}
+                    <Button type="button" variant="outline" size="sm" disabled={otpSending} onClick={sendCheckoutOtp}>
+                      {otpSending
+                        ? lang === 'ne'
+                          ? 'पठाउँदै...'
+                          : 'Sending...'
+                        : lang === 'ne'
+                        ? 'OTP पठाउनुहोस्'
+                        : 'Send OTP'}
                     </Button>
                   </div>
                   {otpNotice && <p className="text-xs text-[#B91C1C] font-mono">{otpNotice}</p>}
@@ -457,26 +551,35 @@ export function CheckoutPage() {
                       </div>
 
                       {/* Coupon per cooperative */}
-                      <div className="flex gap-2 pt-1">
-                        <Input
-                          value={opt.promoCode}
-                          onChange={(e) =>
-                            setCoopOptions({
-                              ...coopOptions,
-                              [g.cooperative.id]: { ...opt, promoCode: e.target.value },
-                            })
-                          }
-                          placeholder={lang === 'ne' ? 'कूपन कोड' : 'Promo code'}
-                          className="h-8 text-xs"
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => revalidate(coopOptions)}
-                        >
-                          {lang === 'ne' ? 'लागू' : 'Apply'}
-                        </Button>
+                      <div className="space-y-1 pt-1">
+                        <div className="flex gap-2">
+                          <Input
+                            value={opt.promoCode}
+                            onChange={(e) =>
+                              setCoopOptions({
+                                ...coopOptions,
+                                [g.cooperative.id]: { ...opt, promoCode: e.target.value },
+                              })
+                            }
+                            placeholder={lang === 'ne' ? 'कूपन कोड' : 'Promo code'}
+                            className="h-8 text-xs"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={validating}
+                            onClick={() => revalidate(coopOptions)}
+                          >
+                            {lang === 'ne' ? 'लागू' : 'Apply'}
+                          </Button>
+                        </div>
+                        {g.promoApplied && g.promoCode && (
+                          <p className="text-[11px] text-[#15803D] font-medium">
+                            {lang === 'ne' ? `कूपन "${g.promoCode}" लागू भयो।` : `Promo "${g.promoCode}" applied.`}
+                          </p>
+                        )}
+                        {g.promoError && <p className="text-[11px] text-[#DC2626]">{g.promoError}</p>}
                       </div>
 
                       {paymentMethod === 'bank_transfer' && g.deliveryConfig?.bank_payment_instructions_ne && (
@@ -531,3 +634,4 @@ export function CheckoutPage() {
     </div>
   );
 }
+

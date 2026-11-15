@@ -61,6 +61,8 @@ async function buildValidatedGroups(
       deliveryFee: number;
       total: number;
       promoCode: string | null;
+      promoApplied: boolean;
+      promoError: string | null;
       deliveryMode: 'delivery' | 'pickup';
     }
   >();
@@ -84,10 +86,10 @@ async function buildValidatedGroups(
     if (coop.status !== 'approved' || !store?.is_published) {
       throw new Error(`सहकारी पसल स्वीकृत वा प्रकाशित छैन (${coop.name_ne})।`);
     }
-    if (raw.status !== 'published' || raw.is_prohibited) {
+    if (raw.status !== 'published' || raw.is_prohibited || raw.availability_status === 'discontinued') {
       throw new Error(`उत्पादन हाल उपलब्ध छैन (${raw.name_ne})।`);
     }
-    if (Number(raw.stock_quantity) < qty) {
+    if (raw.availability_status === 'out_of_stock' || Number(raw.stock_quantity) < qty) {
       throw new Error(`"${raw.name_ne}" को स्टक अपुग छ (उपलब्ध: ${raw.stock_quantity})।`);
     }
 
@@ -126,6 +128,8 @@ async function buildValidatedGroups(
         deliveryFee: 0,
         total: 0,
         promoCode: opt.promoCode ? String(opt.promoCode).trim().toUpperCase() : null,
+        promoApplied: false,
+        promoError: null,
         deliveryMode: opt.deliveryMode === 'pickup' && deliveryConfig?.pickup_enabled ? 'pickup' : 'delivery',
       });
     }
@@ -170,12 +174,19 @@ async function buildValidatedGroups(
         | { discount_type: 'percentage' | 'flat'; discount_value: number; min_order_npr: number }
         | undefined;
 
-      if (promo && g.subtotal >= Number(promo.min_order_npr)) {
-        g.discount =
-          promo.discount_type === 'percentage'
-            ? Number(((g.subtotal * Number(promo.discount_value)) / 100).toFixed(2))
-            : Math.min(g.subtotal, Number(promo.discount_value));
+      if (promo) {
+        if (g.subtotal >= Number(promo.min_order_npr)) {
+          g.discount =
+            promo.discount_type === 'percentage'
+              ? Number(((g.subtotal * Number(promo.discount_value)) / 100).toFixed(2))
+              : Math.min(g.subtotal, Number(promo.discount_value));
+          g.promoApplied = true;
+        } else {
+          g.promoError = `कूपन "${g.promoCode}" का लागि न्यूनतम अर्डर रु. ${promo.min_order_npr} आवश्यक छ।`;
+          g.promoCode = null;
+        }
       } else {
+        g.promoError = `कूपन "${g.promoCode}" मान्य छैन वा म्याद सकिएको छ।`;
         g.promoCode = null;
       }
     }
@@ -369,50 +380,77 @@ checkoutRouter.get('/track', async (req, res) => {
   res.json({ order, items: itemsRes.data || [], history: histRes.data || [] });
 });
 
-// Registered Buyer Account Routes
-checkoutRouter.get('/buyer/orders', requireAuth, async (req, res) => {
+// Registered Buyer Account Router (mounted at /api/buyer and /api/checkout/buyer for compatibility)
+export const buyerRouter = Router();
+
+buyerRouter.get('/orders', requireAuth, async (req, res) => {
   const sb = requireSupabaseAdmin();
-  const { data: orders } = await sb
+  const { data: orders, error } = await sb
     .from('orders')
     .select(
       `*,
-       cooperatives (slug, stores (store_name_ne, store_name_en)),
-       order_items (*)`
+       cooperatives (id, slug, stores (store_name_ne, store_name_en)),
+       order_items (*, products (slug, stock_quantity, availability_status, status, product_images (image_url, is_primary)))`
     )
     .eq('buyer_user_id', req.authUser!.id)
     .order('created_at', { ascending: false });
 
+  if (error) return res.status(500).json({ error: error.message });
+
   const enriched = (orders || []).map((o: Record<string, unknown>) => {
     const coop = (Array.isArray(o.cooperatives) ? o.cooperatives[0] : o.cooperatives) as Record<string, unknown> | null;
     const store = (Array.isArray(coop?.stores) ? coop.stores[0] : coop?.stores) as Record<string, unknown> | null;
-    const { cooperatives: _c, order_items: items, ...rest } = o;
+    const rawItems = (o.order_items as Array<Record<string, unknown>>) || [];
+    const items = rawItems.map((it) => {
+      const prod = (Array.isArray(it.products) ? it.products[0] : it.products) as Record<string, unknown> | null;
+      const imgs = (prod?.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
+      const { products: _p, ...itRest } = it;
+      return {
+        ...itRest,
+        cooperative_id: o.cooperative_id,
+        cooperative_slug: coop?.slug ?? null,
+        store_name_ne: store?.store_name_ne ?? null,
+        store_name_en: store?.store_name_en ?? null,
+        product_slug: prod?.slug ?? null,
+        stock_quantity: prod?.stock_quantity ?? 0,
+        availability_status: prod?.availability_status ?? 'out_of_stock',
+        product_status: prod?.status ?? 'draft',
+        image_url: imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null,
+      };
+    });
+    const { cooperatives: _c, order_items: _items, ...rest } = o;
     return {
       ...rest,
       cooperative_slug: coop?.slug ?? null,
       store_name_ne: store?.store_name_ne ?? null,
       store_name_en: store?.store_name_en ?? null,
-      items: items || [],
+      items,
     };
   });
 
   res.json({ orders: enriched });
 });
 
-checkoutRouter.get('/buyer/addresses', requireAuth, async (req, res) => {
+buyerRouter.get('/addresses', requireAuth, async (req, res) => {
   const sb = requireSupabaseAdmin();
-  const { data: addresses } = await sb
+  const { data: addresses, error } = await sb
     .from('buyer_addresses')
     .select('*')
     .eq('user_id', req.authUser!.id)
     .order('is_default', { ascending: false })
     .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ addresses: addresses || [] });
 });
 
-checkoutRouter.post('/buyer/addresses', requireAuth, async (req, res) => {
+buyerRouter.post('/addresses', requireAuth, async (req, res) => {
   const { label, recipientName, phone, province, district, municipality, wardNumber, streetAddress } = req.body || {};
   if (!recipientName || !phone || !province || !district || !municipality || !wardNumber || !streetAddress) {
     return res.status(400).json({ error: 'ठेगानाका सबै विवरण आवश्यक छन्।' });
+  }
+  const normalized = normalizeNepalPhone(String(phone));
+  if (!isValidNepalMobile(normalized)) {
+    return res.status(400).json({ error: 'मान्य नेपाली मोबाइल नम्बर प्रविष्ट गर्नुहोस्।' });
   }
   const sb = requireSupabaseAdmin();
   const { data, error } = await sb
@@ -420,13 +458,13 @@ checkoutRouter.post('/buyer/addresses', requireAuth, async (req, res) => {
     .insert({
       user_id: req.authUser!.id,
       label: label || 'Home',
-      recipient_name: recipientName,
-      phone: normalizeNepalPhone(phone),
+      recipient_name: String(recipientName).trim(),
+      phone: normalized,
       province,
       district,
       municipality,
       ward_number: wardNumber,
-      street_address: streetAddress,
+      street_address: String(streetAddress).trim(),
     })
     .select('id')
     .single();
@@ -434,15 +472,20 @@ checkoutRouter.post('/buyer/addresses', requireAuth, async (req, res) => {
   res.status(201).json({ id: data.id });
 });
 
-checkoutRouter.delete('/buyer/addresses/:id', requireAuth, async (req, res) => {
+buyerRouter.delete('/addresses/:id', requireAuth, async (req, res) => {
   const sb = requireSupabaseAdmin();
-  await sb.from('buyer_addresses').delete().eq('id', req.params.id).eq('user_id', req.authUser!.id);
+  const { error } = await sb
+    .from('buyer_addresses')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('user_id', req.authUser!.id);
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ ok: true });
 });
 
-checkoutRouter.get('/buyer/wishlist', requireAuth, async (req, res) => {
+buyerRouter.get('/wishlist', requireAuth, async (req, res) => {
   const sb = requireSupabaseAdmin();
-  const { data: rows } = await sb
+  const { data: rows, error } = await sb
     .from('wishlists')
     .select(
       `product_id,
@@ -453,6 +496,8 @@ checkoutRouter.get('/buyer/wishlist', requireAuth, async (req, res) => {
        )`
     )
     .eq('user_id', req.authUser!.id);
+
+  if (error) return res.status(500).json({ error: error.message });
 
   const items = (rows || []).map((r: Record<string, unknown>) => {
     const p = (Array.isArray(r.products) ? r.products[0] : r.products) as Record<string, unknown>;
@@ -472,7 +517,7 @@ checkoutRouter.get('/buyer/wishlist', requireAuth, async (req, res) => {
   res.json({ items });
 });
 
-checkoutRouter.post('/buyer/wishlist/toggle', requireAuth, async (req, res) => {
+buyerRouter.post('/wishlist/toggle', requireAuth, async (req, res) => {
   const { productId } = req.body || {};
   if (!productId) return res.status(400).json({ error: 'उत्पादन ID आवश्यक छ।' });
   const sb = requireSupabaseAdmin();
@@ -485,9 +530,13 @@ checkoutRouter.post('/buyer/wishlist/toggle', requireAuth, async (req, res) => {
     .maybeSingle();
 
   if (existing) {
-    await sb.from('wishlists').delete().eq('id', existing.id);
+    const { error } = await sb.from('wishlists').delete().eq('id', existing.id);
+    if (error) return res.status(400).json({ error: error.message });
     return res.json({ saved: false });
   }
-  await sb.from('wishlists').insert({ user_id: req.authUser!.id, product_id: productId });
+  const { error } = await sb.from('wishlists').insert({ user_id: req.authUser!.id, product_id: productId });
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ saved: true });
 });
+
+checkoutRouter.use('/buyer', buyerRouter);

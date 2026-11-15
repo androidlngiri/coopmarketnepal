@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { formatNPR, toNepaliDigits } from '../lib/bs-date';
@@ -7,6 +8,15 @@ import { Button } from './ui/button';
 
 export function CartDrawer() {
   const { lang, cart, cartOpen, setCartOpen, updateCartQty, removeFromCart, navigate } = useApp();
+
+  useEffect(() => {
+    if (!cartOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCartOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cartOpen, setCartOpen]);
 
   if (!cartOpen) return null;
 
@@ -25,8 +35,13 @@ export function CartDrawer() {
   const coopCount = Object.keys(grouped).length;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/40">
-      <div className="w-full max-w-md bg-white h-full flex flex-col border-l border-[#E5E2DC]">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={() => setCartOpen(false)}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-md bg-white h-full flex flex-col border-l border-[#E5E2DC]"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="px-5 py-4 border-b border-[#E5E2DC] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShoppingBag className="w-5 h-5 text-[#B91C1C]" />
@@ -77,32 +92,47 @@ export function CartDrawer() {
                   <div key={coopId} className="space-y-3 pb-4 border-b border-[#E5E2DC] last:border-b-0">
                     <div className="flex items-center justify-between text-xs font-semibold text-[#57534E]">
                       <span>{storeName}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCartOpen(false);
-                          navigate(`/store/${items[0].cooperativeSlug}`);
-                        }}
-                        className="text-[#B91C1C] hover:underline cursor-pointer"
-                      >
-                        {t('viewStore', lang)}
-                      </button>
+                      {items[0].cooperativeSlug && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCartOpen(false);
+                            navigate(`/store/${items[0].cooperativeSlug}`);
+                          }}
+                          className="text-[#B91C1C] hover:underline cursor-pointer"
+                        >
+                          {t('viewStore', lang)}
+                        </button>
+                      )}
                     </div>
 
                     {items.map((item) => {
                       const unitPrice =
                         item.discountPriceNpr && item.discountPriceNpr > 0 ? item.discountPriceNpr : item.priceNpr;
+                      const maxStock = Math.max(1, item.stockQuantity || 99);
+                      const atStockMax = item.quantity >= maxStock;
+                      const openProduct = () => {
+                        if (!item.slug) return;
+                        setCartOpen(false);
+                        navigate(`/product/${item.slug}`);
+                      };
                       return (
                         <div key={item.productId} className="flex gap-3">
-                          <SafeImage
-                            src={item.imageUrl}
-                            alt={lang === 'ne' ? item.nameNe : item.nameEn}
-                            className="w-16 h-16 rounded-lg shrink-0 border border-[#E5E2DC]"
-                          />
+                          <button type="button" onClick={openProduct} className="shrink-0 cursor-pointer">
+                            <SafeImage
+                              src={item.imageUrl}
+                              alt={lang === 'ne' ? item.nameNe : item.nameEn}
+                              className="w-16 h-16 rounded-lg border border-[#E5E2DC]"
+                            />
+                          </button>
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-[#0F172A] truncate">
+                            <button
+                              type="button"
+                              onClick={openProduct}
+                              className="text-left text-sm font-medium text-[#0F172A] hover:text-[#B91C1C] truncate block w-full cursor-pointer"
+                            >
                               {lang === 'ne' ? item.nameNe : item.nameEn}
-                            </p>
+                            </button>
                             <p className="text-xs text-[#57534E] tabular-nums">
                               {formatNPR(unitPrice, lang)} · {lang === 'ne' ? item.unitLabelNe : item.unitLabelEn}
                             </p>
@@ -121,8 +151,9 @@ export function CartDrawer() {
                                 </span>
                                 <button
                                   type="button"
+                                  disabled={atStockMax}
                                   onClick={() => updateCartQty(item.productId, item.quantity + 1)}
-                                  className="h-7 w-7 inline-flex items-center justify-center hover:bg-[#F3F1EC] cursor-pointer"
+                                  className="h-7 w-7 inline-flex items-center justify-center hover:bg-[#F3F1EC] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                                   aria-label="Increase quantity"
                                 >
                                   <Plus className="w-3.5 h-3.5" />

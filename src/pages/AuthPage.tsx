@@ -7,10 +7,11 @@ import { Button } from '../components/ui/button';
 import { toast } from 'sonner';
 
 export function AuthPage() {
-  const { lang, navigate, refreshSession } = useApp();
+  const { lang, user, logout, navigate, refreshSession } = useApp();
   const [tab, setTab] = useState<'login' | 'buyer' | 'setup_admin'>('login');
   const [hasSuperAdmin, setHasSuperAdmin] = useState(true);
   const [loginMode, setLoginMode] = useState<'password' | 'otp'>('password');
+  const [otpSending, setOtpSending] = useState(false);
   const [otpNotice, setOtpNotice] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -28,19 +29,53 @@ export function AuthPage() {
     apiFetch<{ hasSuperAdmin: boolean }>('/api/auth/bootstrap-status').then((res) => {
       if (res.ok) {
         setHasSuperAdmin(res.data.hasSuperAdmin);
-        if (!res.data.hasSuperAdmin) {
-          // Keep login default, show visible setup notice
-        }
       }
     });
   }, []);
 
+  if (user) {
+    const dashboardPath =
+      user.role === 'super_admin'
+        ? '/super-admin'
+        : user.role === 'cooperative_admin' || user.role === 'cooperative_staff'
+        ? '/cooperative'
+        : '/account';
+
+    return (
+      <div className="max-w-md mx-auto px-4 py-16">
+        <div className="bg-white border border-[#E5E2DC] rounded-xl p-6 space-y-4 text-center">
+          <p className="text-xs font-medium text-[#15803D]">
+            {lang === 'ne' ? 'तपाईं पहिले नै लगइन हुनुहुन्छ' : 'You are currently signed in'}
+          </p>
+          <h1 className="font-display text-xl font-bold text-[#0F172A]">{user.full_name}</h1>
+          <p className="text-xs text-[#57534E]">
+            {user.email || user.phone} · {user.role}
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2 pt-2">
+            <Button className="flex-1" onClick={() => navigate(dashboardPath)}>
+              {lang === 'ne' ? 'ड्यासबोर्डमा जानुहोस्' : 'Go to Dashboard'}
+            </Button>
+            <Button variant="outline" className="flex-1" onClick={logout}>
+              {lang === 'ne' ? 'बाहिर निस्कनुहोस्' : 'Sign Out'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const handleRequestOtp = async () => {
+    if (!loginForm.identifier.trim()) {
+      toast.error(lang === 'ne' ? 'कृपया मोबाइल नम्बर प्रविष्ट गर्नुहोस्।' : 'Please enter your mobile number.');
+      return;
+    }
+    setOtpSending(true);
     setOtpNotice('');
     const res = await apiFetch<{ localOtpNotice?: string }>('/api/auth/otp/request', {
       method: 'POST',
       body: JSON.stringify({ phone: loginForm.identifier, purpose: 'login' }),
     });
+    setOtpSending(false);
     if (!res.ok) {
       toast.error(res.error || 'OTP पठाउन सकिएन।');
       return;
@@ -217,8 +252,8 @@ export function AuthPage() {
                     placeholder="6-digit OTP"
                     className="font-mono"
                   />
-                  <Button type="button" variant="outline" onClick={handleRequestOtp}>
-                    {lang === 'ne' ? 'OTP पठाउनुहोस्' : 'Send OTP'}
+                  <Button type="button" variant="outline" disabled={otpSending} onClick={handleRequestOtp}>
+                    {otpSending ? (lang === 'ne' ? 'पठाउँदै...' : 'Sending...') : lang === 'ne' ? 'OTP पठाउनुहोस्' : 'Send OTP'}
                   </Button>
                 </div>
                 {otpNotice && <p className="text-xs text-[#B91C1C] font-mono">{otpNotice}</p>}

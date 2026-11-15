@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireSuperAdmin, writeAuditLog } from '../auth.ts';
 import { isAkashSmsConfigured, sendAkashSms } from '../akash-sms.ts';
+import { getGeminiModel, isGeminiConfigured } from '../gemini.ts';
 import { parseJsonField, requireSupabaseAdmin, verifySupabaseConnection } from '../supabase-admin.ts';
 import { resolveDocumentAccessUrl } from '../storage.ts';
 
@@ -273,6 +274,8 @@ adminRouter.get('/marketplace-controls', async (_req, res) => {
     const { cooperatives: _c, global_categories: _gc, product_images: _pi, ...rest } = p;
     return {
       ...rest,
+      ai_details_json: parseJsonField(p.ai_details_json, {}),
+      seo_keywords_json: parseJsonField(p.seo_keywords_json, []),
       cooperative_name_ne: coop?.name_ne ?? null,
       cooperative_name_en: coop?.name_en ?? null,
       cooperative_slug: coop?.slug ?? null,
@@ -315,6 +318,60 @@ adminRouter.post('/categories', async (req, res) => {
   res.status(201).json({ id: data.id });
 });
 
+adminRouter.patch('/categories/:id/toggle', async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data: existing } = await sb
+    .from('global_categories')
+    .select('id, is_active')
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (!existing) return res.status(404).json({ error: 'वर्ग फेला परेन।' });
+  const { error } = await sb
+    .from('global_categories')
+    .update({ is_active: !existing.is_active })
+    .eq('id', req.params.id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ ok: true, is_active: !existing.is_active });
+});
+
+adminRouter.get('/ai-usage', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const [statsRes, recentRes] = await Promise.all([
+    sb.rpc('get_platform_ai_usage_stats'),
+    sb
+      .from('ai_product_generations')
+      .select(
+        'id, cooperative_id, mode, product_name_input, language, generation_date_ktm, model, status, counts_toward_quota, error_message, prompt_tokens, output_tokens, created_at, cooperatives (name_ne, name_en)'
+      )
+      .order('created_at', { ascending: false })
+      .limit(40),
+  ]);
+
+  if (statsRes.error) {
+    return res.status(500).json({ error: statsRes.error.message });
+  }
+
+  const recentGenerations = (recentRes.data || []).map((row: Record<string, unknown>) => {
+    const coop = (Array.isArray(row.cooperatives) ? row.cooperatives[0] : row.cooperatives) as Record<
+      string,
+      unknown
+    > | null;
+    const { cooperatives: _c, ...rest } = row;
+    return {
+      ...rest,
+      cooperative_name_ne: coop?.name_ne ?? null,
+      cooperative_name_en: coop?.name_en ?? null,
+    };
+  });
+
+  res.json({
+    stats: statsRes.data || {},
+    recentGenerations,
+    geminiConfigured: isGeminiConfigured(),
+    model: getGeminiModel(),
+  });
+});
+
 adminRouter.all('/products*', (_req, res) => {
   return res.status(403).json({
     error: 'व्यक्तिगत उत्पादन व्यवस्थापन सम्बन्धित सहकारी पसलबाट मात्र गर्न मिल्छ (Super Admin has read-only product monitoring).',
@@ -323,7 +380,7 @@ adminRouter.all('/products*', (_req, res) => {
 
 adminRouter.put('/settings/branding', async (req, res) => {
   const sb = requireSupabaseAdmin();
-  await sb.from('platform_settings').upsert(
+  const { error } = await sb.from('platform_settings').upsert(
     {
       key: 'branding',
       value_json: req.body || {},
@@ -332,6 +389,7 @@ adminRouter.put('/settings/branding', async (req, res) => {
     },
     { onConflict: 'key' }
   );
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ ok: true });
 });
 
@@ -431,6 +489,10 @@ adminRouter.get('/integrations-status', async (_req, res) => {
         process.env.AAKASH_SMS_ENDPOINT ||
         process.env.AKASH_SMS_API_URL ||
         'https://sms.aakashsms.com/sms/v3/send',
+    },
+    gemini: {
+      configured: isGeminiConfigured(),
+      model: getGeminiModel(),
     },
   });
 });

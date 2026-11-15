@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Search } from 'lucide-react';
+import { RotateCcw, Search } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { t } from '../lib/i18n';
@@ -9,23 +9,36 @@ import { Button } from '../components/ui/button';
 
 export function MarketplacePage() {
   const { lang } = useApp();
+  const initialParams = new URLSearchParams(window.location.search);
   const [products, setProducts] = useState<ProductRecord[]>([]);
   const [categories, setCategories] = useState<Array<{ id: string; slug: string; name_ne: string; name_en: string }>>([]);
-  const [q, setQ] = useState('');
-  const [category, setCategory] = useState('');
-  const [district, setDistrict] = useState('');
-  const [discounted, setDiscounted] = useState(false);
-  const [sort, setSort] = useState('featured');
+  const [q, setQ] = useState(initialParams.get('q') || '');
+  const [category, setCategory] = useState(initialParams.get('category') || '');
+  const [district, setDistrict] = useState(initialParams.get('district') || '');
+  const [discounted, setDiscounted] = useState(initialParams.get('discounted') === '1');
+  const [sort, setSort] = useState(initialParams.get('sort') || 'featured');
   const [loading, setLoading] = useState(true);
 
-  const loadProducts = async () => {
+  const loadProducts = async (overrides?: {
+    q?: string;
+    category?: string;
+    district?: string;
+    discounted?: boolean;
+    sort?: string;
+  }) => {
     setLoading(true);
+    const nextQ = overrides?.q !== undefined ? overrides.q : q;
+    const nextCat = overrides?.category !== undefined ? overrides.category : category;
+    const nextDist = overrides?.district !== undefined ? overrides.district : district;
+    const nextDisc = overrides?.discounted !== undefined ? overrides.discounted : discounted;
+    const nextSort = overrides?.sort !== undefined ? overrides.sort : sort;
+
     const params = new URLSearchParams();
-    if (q.trim()) params.set('q', q.trim());
-    if (category) params.set('category', category);
-    if (district.trim()) params.set('district', district.trim());
-    if (discounted) params.set('discounted', '1');
-    if (sort) params.set('sort', sort);
+    if (nextQ.trim()) params.set('q', nextQ.trim());
+    if (nextCat) params.set('category', nextCat);
+    if (nextDist.trim()) params.set('district', nextDist.trim());
+    if (nextDisc) params.set('discounted', '1');
+    if (nextSort) params.set('sort', nextSort);
 
     const res = await apiFetch<{ products: ProductRecord[] }>(`/api/public/products?${params.toString()}`);
     if (res.ok) setProducts(res.data.products);
@@ -44,6 +57,17 @@ export function MarketplacePage() {
     loadProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, discounted, sort]);
+
+  const handleResetFilters = () => {
+    setQ('');
+    setCategory('');
+    setDistrict('');
+    setDiscounted(false);
+    setSort('featured');
+    loadProducts({ q: '', category: '', district: '', discounted: false, sort: 'featured' });
+  };
+
+  const hasActiveFilter = Boolean(q.trim() || category || district.trim() || discounted || sort !== 'featured');
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
@@ -99,8 +123,8 @@ export function MarketplacePage() {
         </Select>
 
         <div className="flex items-center gap-2">
-          <Button type="submit" className="flex-1">
-            {lang === 'ne' ? 'खोज्नुहोस्' : 'Filter'}
+          <Button type="submit" disabled={loading} className="flex-1">
+            {loading ? t('loading', lang) : lang === 'ne' ? 'खोज्नुहोस्' : 'Filter'}
           </Button>
           <button
             type="button"
@@ -111,6 +135,17 @@ export function MarketplacePage() {
           >
             {lang === 'ne' ? 'छुट मात्र' : 'Deals'}
           </button>
+          {hasActiveFilter && (
+            <button
+              type="button"
+              onClick={handleResetFilters}
+              title={lang === 'ne' ? 'फिल्टर रिसेट' : 'Reset Filters'}
+              className="h-10 w-10 inline-flex items-center justify-center rounded-lg border border-[#E5E2DC] text-[#57534E] hover:text-[#0F172A] hover:bg-[#F3F1EC] shrink-0 cursor-pointer"
+              aria-label="Reset filters"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </form>
 
@@ -125,16 +160,7 @@ export function MarketplacePage() {
           <p className="text-sm text-[#57534E]">
             {lang === 'ne' ? 'खोज अनुसार कुनै उत्पादन फेला परेन।' : 'No matching cooperative products found.'}
           </p>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setQ('');
-              setCategory('');
-              setDistrict('');
-              setDiscounted(false);
-              setSort('featured');
-            }}
-          >
+          <Button variant="outline" onClick={handleResetFilters}>
             {lang === 'ne' ? 'फिल्टर रिसेट गर्नुहोस्' : 'Reset Filters'}
           </Button>
         </div>

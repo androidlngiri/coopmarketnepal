@@ -1,7 +1,13 @@
 import crypto from 'crypto';
 import { Router } from 'express';
-import { requireCooperativeAccess, writeAuditLog } from '../auth.ts';
+import { rateLimit, requireCooperativeAccess, writeAuditLog } from '../auth.ts';
 import { normalizeNepalPhone, sendAkashSms } from '../akash-sms.ts';
+import {
+  generateProductWithGemini,
+  GeminiAssistantError,
+  getGeminiModel,
+  isGeminiConfigured,
+} from '../gemini.ts';
 import {
   createSupabaseAuthUser,
   parseJsonField,
@@ -10,6 +16,50 @@ import {
 import { resolveDocumentAccessUrl, uploadBase64ToSupabaseStorage } from '../storage.ts';
 
 export const coopDashboardRouter = Router();
+
+function sanitizeAiDetails(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') return {};
+  const obj = raw as Record<string, unknown>;
+  const cleanArr = (v: unknown) =>
+    Array.isArray(v) ? v.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 15) : [];
+  const cleanSpecs = Array.isArray(obj.known_specifications)
+    ? obj.known_specifications
+        .map((s) => {
+          const item = s as Record<string, unknown>;
+          return { label: String(item?.label ?? '').trim(), value: String(item?.value ?? '').trim() };
+        })
+        .filter((s) => s.label && s.value)
+        .slice(0, 15)
+    : [];
+  const cleanRecipes = Array.isArray(obj.recipe_suggestions)
+    ? obj.recipe_suggestions
+        .map((r) => {
+          const item = r as Record<string, unknown>;
+          return {
+            title: String(item?.title ?? '').trim(),
+            ingredients: cleanArr(item?.ingredients),
+            steps: cleanArr(item?.steps),
+          };
+        })
+        .filter((r) => r.title && (r.ingredients.length > 0 || r.steps.length > 0))
+        .slice(0, 4)
+    : [];
+
+  return {
+    product_type_detected: String(obj.product_type_detected ?? '').trim(),
+    highlights: cleanArr(obj.highlights),
+    known_specifications: cleanSpecs,
+    ingredients_or_materials: cleanArr(obj.ingredients_or_materials),
+    uses_and_benefits: cleanArr(obj.uses_and_benefits),
+    preparation_or_usage: String(obj.preparation_or_usage ?? '').trim(),
+    recipe_suggestions: cleanRecipes,
+    storage_instructions: String(obj.storage_instructions ?? '').trim(),
+    handling_instructions: String(obj.handling_instructions ?? '').trim(),
+    safety_precautions: String(obj.safety_precautions ?? '').trim(),
+    packaging_suggestions: String(obj.packaging_suggestions ?? '').trim(),
+    needs_confirmation: cleanArr(obj.needs_confirmation),
+  };
+}
 
 async function getCoopAndSub(coopId: string) {
   const sb = requireSupabaseAdmin();
@@ -275,15 +325,200 @@ coopDashboardRouter.post('/categories', requireCooperativeAccess('manage_product
 
 coopDashboardRouter.delete('/categories/:id', requireCooperativeAccess('manage_products'), async (req, res) => {
   const sb = requireSupabaseAdmin();
-  await sb
+  const { error } = await sb
     .from('cooperative_categories')
     .delete()
     .eq('id', req.params.id)
     .eq('cooperative_id', req.cooperativeId!);
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ ok: true });
 });
 
-// 4. Products & Inventory
+// 4. Products, Rich Content, Inventory & AI Product Assistant
+coopDashboardRouter.get('/products/ai-quota', requireCooperativeAccess(), async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data: quota, error } = await sb.rpc('get_coop_ai_quota', {
+    p_cooperative_id: req.cooperativeId!,
+    p_daily_limit: 2,
+  });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({
+    quota,
+    geminiConfigured: isGeminiConfigured(),
+    model: getGeminiModel(),
+    timezone: 'Asia/Kathmandu',
+  });
+});
+
+coopDashboardRouter.get('/products/ai-history', requireCooperativeAccess(), async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb
+    .from('ai_product_generations')
+    .select(
+      'id, product_id, mode, product_name_input, language, generation_date_ktm, model, status, counts_toward_quota, generated_payload_json, error_message, prompt_tokens, output_tokens, created_at, completed_at'
+    )
+    .eq('cooperative_id', req.cooperativeId!)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ history: data || [] });
+});
+
+coopDashboardRouter.post(
+  '/products/ai-generate',
+  rateLimit('coop_ai_generate', 12, 60 * 1000),
+  requireCooperativeAccess('manage_products'),
+  async (req, res) => {
+    const coopId = req.cooperativeId!;
+    const sb = requireSupabaseAdmin();
+    const b = req.body || {};
+
+    const productName = String(b.productName || '').trim();
+    if (productName.length < 2 || productName.length > 200) {
+      return res.status(400).json({ error: 'उत्पादनको नाम कम्तीमा २ अक्षरको प्रविष्ट गर्नुहोस्।' });
+    }
+
+    const language: 'ne' | 'en' = b.language === 'en' ? 'en' : 'ne';
+    const mode: 'create' | 'edit' = b.mode === 'edit' ? 'edit' : 'create';
+    const productId = b.productId ? String(b.productId).trim() : null;
+
+    if (productId) {
+      const { data: ownedProd } = await sb
+        .from('products')
+        .select('id')
+        .eq('id', productId)
+        .eq('cooperative_id', coopId)
+        .maybeSingle();
+      if (!ownedProd) {
+        return res.status(404).json({ error: 'सम्बन्धित उत्पादन फेला परेन।' });
+      }
+    }
+
+    if (!isGeminiConfigured()) {
+      const { data: quota } = await sb.rpc('get_coop_ai_quota', {
+        p_cooperative_id: coopId,
+        p_daily_limit: 2,
+      });
+      return res.status(503).json({
+        error: 'AI सेवा हाल कन्फिगर गरिएको छैन। कृपया म्यानुअल रूपमा उत्पादन विवरण भरेर सुरक्षित गर्नुहोस्।',
+        code: 'AI_UNCONFIGURED',
+        quota,
+        manualFallback: true,
+      });
+    }
+
+    const [coopRes, catsRes] = await Promise.all([
+      sb.from('cooperatives').select('name_ne, name_en, cooperative_type, district').eq('id', coopId).single(),
+      sb.from('global_categories').select('id, slug, name_ne, name_en').eq('is_active', true).order('sort_order', { ascending: true }),
+    ]);
+
+    const model = getGeminiModel();
+    const { data: reservation, error: resErr } = await sb.rpc('reserve_coop_ai_generation', {
+      p_cooperative_id: coopId,
+      p_user_id: req.authUser!.id,
+      p_product_id: productId,
+      p_mode: mode,
+      p_product_name: productName,
+      p_language: language,
+      p_model: model,
+      p_daily_limit: 2,
+    });
+
+    if (resErr) {
+      return res.status(500).json({ error: resErr.message || 'कोटा जाँच असफल।', manualFallback: true });
+    }
+
+    const reserveObj = (reservation || {}) as {
+      allowed?: boolean;
+      generationId?: string;
+      used?: number;
+      limit?: number;
+      remaining?: number;
+      dateKtm?: string;
+    };
+
+    if (!reserveObj.allowed || !reserveObj.generationId) {
+      return res.status(429).json({
+        error: `तपाईंको सहकारीको आजको निःशुल्क AI सीमा (${reserveObj.limit ?? 2} पटक / दिन, नेपाल समय) पूरा भइसकेको छ। भोलि पुनः प्रयास गर्नुहोस् वा म्यानुअल रूपमा विवरण प्रविष्ट गर्नुहोस्।`,
+        code: 'DAILY_QUOTA_REACHED',
+        quota: reserveObj,
+        manualFallback: true,
+      });
+    }
+
+    const generationId = reserveObj.generationId;
+    const globalCategories = (catsRes.data || []) as Array<{
+      id: string;
+      slug: string;
+      name_ne: string;
+      name_en: string;
+    }>;
+
+    try {
+      const coopData = (coopRes.data || {}) as Record<string, unknown>;
+      const result = await generateProductWithGemini({
+        productName,
+        language,
+        cooperativeName: String(coopData.name_ne || coopData.name_en || ''),
+        cooperativeType: String(coopData.cooperative_type || ''),
+        cooperativeDistrict: String(coopData.district || ''),
+        existingNotes: b.existingNotes ? String(b.existingNotes).slice(0, 800) : undefined,
+        knownSpecs: b.knownSpecs ? String(b.knownSpecs).slice(0, 600) : undefined,
+        unitHint: b.unitHint ? String(b.unitHint).slice(0, 60) : undefined,
+        globalCategories,
+      });
+
+      const matchedCat = globalCategories.find((c) => c.slug === result.data.suggested_category_slug);
+      const { data: completedQuota } = await sb.rpc('complete_coop_ai_generation', {
+        p_generation_id: generationId,
+        p_status: 'completed',
+        p_payload: result.data,
+        p_error_message: null,
+        p_prompt_tokens: result.promptTokens,
+        p_output_tokens: result.outputTokens,
+      });
+
+      await writeAuditLog({
+        actorUserId: req.authUser!.id,
+        actorRole: req.authUser!.role,
+        cooperativeId: coopId,
+        action: 'ai_product_generated',
+        entityType: 'ai_product_generation',
+        entityId: generationId,
+        metadata: { productName, language, model: result.model, mode },
+        ipAddress: req.ip,
+      });
+
+      return res.json({
+        generationId,
+        generated: result.data,
+        suggestedCategoryId: matchedCat?.id ?? '',
+        model: result.model,
+        quota: completedQuota || reserveObj,
+      });
+    } catch (err) {
+      const isGeminiErr = err instanceof GeminiAssistantError;
+      const errMsg = isGeminiErr ? err.message : 'AI उत्पादन विवरण सिर्जना असफल भयो।';
+      const errCode = isGeminiErr ? err.code : 'AI_FAILED';
+      const httpStatus = isGeminiErr ? err.httpStatus : 502;
+
+      const { data: releasedQuota } = await sb.rpc('complete_coop_ai_generation', {
+        p_generation_id: generationId,
+        p_status: 'failed',
+        p_payload: null,
+        p_error_message: errMsg,
+      });
+
+      return res.status(httpStatus).json({
+        error: errMsg,
+        code: errCode,
+        quota: releasedQuota,
+        manualFallback: true,
+      });
+    }
+  }
+);
+
 coopDashboardRouter.get('/products', requireCooperativeAccess(), async (req, res) => {
   const sb = requireSupabaseAdmin();
   const { data: rawProducts } = await sb
@@ -301,6 +536,8 @@ coopDashboardRouter.get('/products', requireCooperativeAccess(), async (req, res
     const { product_images: _pi, global_categories: _gc, ...rest } = p;
     return {
       ...rest,
+      ai_details_json: parseJsonField(p.ai_details_json, {}),
+      seo_keywords_json: parseJsonField(p.seo_keywords_json, []),
       image_url: imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null,
       category_name_ne: cat?.name_ne ?? null,
       category_name_en: cat?.name_en ?? null,
@@ -365,6 +602,9 @@ coopDashboardRouter.post('/products', requireCooperativeAccess('manage_products'
       .replace(/^-+|-+$/g, '') || 'product';
   const slug = `${slugBase}-${crypto.randomBytes(2).toString('hex')}`;
   const stockQty = Math.max(0, Math.floor(Number(b.stockQuantity || 0)));
+  const seoKeywords = Array.isArray(b.seoKeywords)
+    ? b.seoKeywords.map((k: unknown) => String(k ?? '').trim()).filter(Boolean).slice(0, 15)
+    : [];
 
   const { data: prod, error: prodErr } = await sb
     .from('products')
@@ -376,8 +616,17 @@ coopDashboardRouter.post('/products', requireCooperativeAccess('manage_products'
       sku: String(b.sku).trim().toUpperCase(),
       name_ne: String(b.nameNe).trim(),
       name_en: String(b.nameEn).trim(),
+      short_description_ne: b.shortDescriptionNe || null,
+      short_description_en: b.shortDescriptionEn || null,
       description_ne: b.descriptionNe || '',
       description_en: b.descriptionEn || '',
+      ai_details_json: sanitizeAiDetails(b.aiDetails),
+      seo_title_ne: b.seoTitleNe || null,
+      seo_title_en: b.seoTitleEn || null,
+      seo_meta_description_ne: b.seoMetaDescriptionNe || null,
+      seo_meta_description_en: b.seoMetaDescriptionEn || null,
+      seo_keywords_json: seoKeywords,
+      ai_assisted: Boolean(b.aiAssisted),
       price_npr: Number(b.priceNpr),
       discount_price_npr: b.discountPriceNpr ? Number(b.discountPriceNpr) : null,
       unit_label_ne: b.unitLabelNe || 'के.जी.',
@@ -417,6 +666,13 @@ coopDashboardRouter.post('/products', requireCooperativeAccess('manage_products'
       note: 'प्रारम्भिक स्टक',
       created_by: req.authUser!.id,
     }),
+    b.aiGenerationId
+      ? sb
+          .from('ai_product_generations')
+          .update({ product_id: prod.id })
+          .eq('id', String(b.aiGenerationId))
+          .eq('cooperative_id', coopId)
+      : Promise.resolve(),
   ]);
 
   res.status(201).json({ id: prod.id, slug: prod.slug });
@@ -448,8 +704,21 @@ coopDashboardRouter.patch('/products/:id', requireCooperativeAccess('manage_prod
   if (b.nameNe !== undefined) updatePayload.name_ne = String(b.nameNe).trim();
   if (b.nameEn !== undefined) updatePayload.name_en = String(b.nameEn).trim();
   if (b.sku !== undefined && String(b.sku).trim()) updatePayload.sku = String(b.sku).trim().toUpperCase();
+  if (b.shortDescriptionNe !== undefined) updatePayload.short_description_ne = b.shortDescriptionNe;
+  if (b.shortDescriptionEn !== undefined) updatePayload.short_description_en = b.shortDescriptionEn;
   if (b.descriptionNe !== undefined) updatePayload.description_ne = b.descriptionNe;
   if (b.descriptionEn !== undefined) updatePayload.description_en = b.descriptionEn;
+  if (b.aiDetails !== undefined) updatePayload.ai_details_json = sanitizeAiDetails(b.aiDetails);
+  if (b.seoTitleNe !== undefined) updatePayload.seo_title_ne = b.seoTitleNe;
+  if (b.seoTitleEn !== undefined) updatePayload.seo_title_en = b.seoTitleEn;
+  if (b.seoMetaDescriptionNe !== undefined) updatePayload.seo_meta_description_ne = b.seoMetaDescriptionNe;
+  if (b.seoMetaDescriptionEn !== undefined) updatePayload.seo_meta_description_en = b.seoMetaDescriptionEn;
+  if (b.seoKeywords !== undefined) {
+    updatePayload.seo_keywords_json = Array.isArray(b.seoKeywords)
+      ? b.seoKeywords.map((k: unknown) => String(k ?? '').trim()).filter(Boolean).slice(0, 15)
+      : [];
+  }
+  if (b.aiAssisted !== undefined) updatePayload.ai_assisted = Boolean(b.aiAssisted);
   if (b.priceNpr !== undefined) updatePayload.price_npr = Number(b.priceNpr);
   if (b.discountPriceNpr !== undefined) {
     updatePayload.discount_price_npr =
@@ -499,7 +768,89 @@ coopDashboardRouter.patch('/products/:id', requireCooperativeAccess('manage_prod
       error: updateErr.code === '23505' ? 'यो SKU पहिले नै प्रयोग भइसकेको छ।' : updateErr.message,
     });
   }
+
+  if (b.aiGenerationId) {
+    await sb
+      .from('ai_product_generations')
+      .update({ product_id: req.params.id })
+      .eq('id', String(b.aiGenerationId))
+      .eq('cooperative_id', coopId);
+  }
+
   res.json({ ok: true });
+});
+
+coopDashboardRouter.delete('/products/:id', requireCooperativeAccess('manage_products'), async (req, res) => {
+  const coopId = req.cooperativeId!;
+  const sb = requireSupabaseAdmin();
+
+  const { data: existing } = await sb
+    .from('products')
+    .select('id, name_ne, sku')
+    .eq('id', req.params.id)
+    .eq('cooperative_id', coopId)
+    .maybeSingle();
+
+  if (!existing) {
+    return res.status(404).json({ error: 'उत्पादन फेला परेन।' });
+  }
+
+  const { count: orderItemCount } = await sb
+    .from('order_items')
+    .select('*', { count: 'exact', head: true })
+    .eq('product_id', req.params.id);
+
+  if ((orderItemCount || 0) > 0) {
+    const { error } = await sb
+      .from('products')
+      .update({ status: 'archived', availability_status: 'discontinued' })
+      .eq('id', req.params.id)
+      .eq('cooperative_id', coopId);
+    if (error) return res.status(400).json({ error: error.message });
+
+    await writeAuditLog({
+      actorUserId: req.authUser!.id,
+      actorRole: req.authUser!.role,
+      cooperativeId: coopId,
+      action: 'product_archived',
+      entityType: 'product',
+      entityId: req.params.id,
+      metadata: { sku: existing.sku, reason: 'existing_orders_present' },
+      ipAddress: req.ip,
+    });
+
+    return res.json({
+      ok: true,
+      mode: 'archived',
+      message: 'यो उत्पादनमा अर्डर इतिहास रहेकोले स्थायी रूपमा मेटाइएन, आर्काइभ गरिएको छ।',
+    });
+  }
+
+  await Promise.all([
+    sb.from('product_images').delete().eq('product_id', req.params.id).eq('cooperative_id', coopId),
+    sb.from('inventory_movements').delete().eq('product_id', req.params.id).eq('cooperative_id', coopId),
+    sb.from('wishlists').delete().eq('product_id', req.params.id),
+  ]);
+
+  const { error: delErr } = await sb
+    .from('products')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('cooperative_id', coopId);
+  if (delErr) return res.status(400).json({ error: delErr.message });
+
+  await writeAuditLog({
+    actorUserId: req.authUser!.id,
+    actorRole: req.authUser!.role,
+    cooperativeId: coopId,
+    action: 'product_deleted',
+    entityType: 'product',
+    entityId: req.params.id,
+    metadata: { sku: existing.sku, name_ne: existing.name_ne },
+    ipAddress: req.ip,
+  });
+
+  res.json({ ok: true, mode: 'deleted', message: 'उत्पादन सफलतापूर्वक हटाइयो।' });
 });
 
 coopDashboardRouter.post('/products/:id/adjust-stock', requireCooperativeAccess('manage_inventory'), async (req, res) => {
@@ -775,7 +1126,12 @@ coopDashboardRouter.post('/promotions', requireCooperativeAccess('manage_setting
 
 coopDashboardRouter.delete('/promotions/:id', requireCooperativeAccess('manage_settings'), async (req, res) => {
   const sb = requireSupabaseAdmin();
-  await sb.from('promotions').delete().eq('id', req.params.id).eq('cooperative_id', req.cooperativeId!);
+  const { error } = await sb
+    .from('promotions')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('cooperative_id', req.cooperativeId!);
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ ok: true });
 });
 
@@ -804,7 +1160,7 @@ coopDashboardRouter.put('/delivery', requireCooperativeAccess('manage_settings')
         .filter(Boolean);
 
   const sb = requireSupabaseAdmin();
-  await sb
+  const { error } = await sb
     .from('delivery_configs')
     .update({
       delivery_areas_json: areas,
@@ -819,6 +1175,7 @@ coopDashboardRouter.put('/delivery', requireCooperativeAccess('manage_settings')
     })
     .eq('cooperative_id', req.cooperativeId!);
 
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ ok: true });
 });
 
@@ -1055,4 +1412,37 @@ coopDashboardRouter.post('/support', requireCooperativeAccess(), async (req, res
   });
 
   res.status(201).json({ id: ticket.id });
+});
+
+coopDashboardRouter.post('/support/:id/reply', requireCooperativeAccess(), async (req, res) => {
+  const message = String(req.body?.message || '').trim();
+  if (!message) return res.status(400).json({ error: 'सन्देश आवश्यक छ।' });
+  const sb = requireSupabaseAdmin();
+
+  const { data: ticket } = await sb
+    .from('support_tickets')
+    .select('id, status')
+    .eq('id', req.params.id)
+    .eq('cooperative_id', req.cooperativeId!)
+    .maybeSingle();
+
+  if (!ticket) return res.status(404).json({ error: 'सहायता टिकट फेला परेन।' });
+
+  const { error: msgErr } = await sb.from('support_messages').insert({
+    ticket_id: ticket.id,
+    sender_user_id: req.authUser!.id,
+    sender_role: req.authUser!.role,
+    message,
+  });
+  if (msgErr) return res.status(400).json({ error: msgErr.message });
+
+  await sb
+    .from('support_tickets')
+    .update({
+      status: ticket.status === 'resolved' || ticket.status === 'closed' ? 'open' : ticket.status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', ticket.id);
+
+  res.status(201).json({ ok: true });
 });

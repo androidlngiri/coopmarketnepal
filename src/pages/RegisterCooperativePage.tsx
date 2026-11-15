@@ -106,6 +106,48 @@ export function RegisterCooperativePage() {
     navigate('/cooperative');
   };
 
+  const validateStep1 = () => {
+    if (
+      !form.nameNe.trim() ||
+      !form.nameEn.trim() ||
+      !form.registrationNumber.trim() ||
+      !form.registrationAuthority.trim() ||
+      !form.registrationDateAd.trim()
+    ) {
+      toast.error(
+        lang === 'ne'
+          ? 'कृपया चरण १ का सबै अनिवार्य (*) विवरणहरू भर्नुहोस्।'
+          : 'Please complete all required (*) fields in Step 1.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const validateStep2 = () => {
+    if (
+      !form.municipality.trim() ||
+      !form.wardNumber.trim() ||
+      !form.toleAddress.trim() ||
+      !form.authorizedRepName.trim() ||
+      !form.authorizedRepDesignation.trim()
+    ) {
+      toast.error(
+        lang === 'ne'
+          ? 'कृपया चरण २ का सबै अनिवार्य (*) ठेगाना र प्रतिनिधि विवरण भर्नुहोस्।'
+          : 'Please complete all required (*) address and representative fields in Step 2.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const handleStepNav = (targetStep: 1 | 2 | 3) => {
+    if (targetStep === 2 && !validateStep1()) return;
+    if (targetStep === 3 && (!validateStep1() || !validateStep2())) return;
+    setStep(targetStep);
+  };
+
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-8">
       <div className="space-y-2 border-b border-[#E5E2DC] pb-5">
@@ -132,7 +174,7 @@ export function RegisterCooperativePage() {
           <button
             key={s.num}
             type="button"
-            onClick={() => setStep(s.num as 1 | 2 | 3)}
+            onClick={() => handleStepNav(s.num as 1 | 2 | 3)}
             className={`py-2.5 px-3 rounded-lg text-xs font-semibold border text-left cursor-pointer ${
               step === s.num
                 ? 'bg-[#0F172A] text-white border-[#0F172A]'
@@ -248,7 +290,7 @@ export function RegisterCooperativePage() {
             </div>
 
             <div className="flex justify-end pt-2">
-              <Button type="button" onClick={() => setStep(2)}>
+              <Button type="button" onClick={() => handleStepNav(2)}>
                 {lang === 'ne' ? 'अर्को चरण →' : 'Next Step →'}
               </Button>
             </div>
@@ -382,7 +424,7 @@ export function RegisterCooperativePage() {
               <Button type="button" variant="outline" onClick={() => setStep(1)}>
                 {lang === 'ne' ? '← पछाडि' : '← Back'}
               </Button>
-              <Button type="button" onClick={() => setStep(3)}>
+              <Button type="button" onClick={() => handleStepNav(3)}>
                 {lang === 'ne' ? 'अर्को चरण →' : 'Next Step →'}
               </Button>
             </div>

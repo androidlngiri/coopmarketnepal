@@ -4,7 +4,7 @@ import { attachAuth } from './auth.ts';
 import { authRouter } from './routes/auth.ts';
 import { publicRouter } from './routes/public.ts';
 import { cooperativesRouter } from './routes/cooperatives.ts';
-import { checkoutRouter } from './routes/checkout.ts';
+import { buyerRouter, checkoutRouter } from './routes/checkout.ts';
 import { coopDashboardRouter } from './routes/coop-dashboard.ts';
 import { adminRouter } from './routes/admin.ts';
 import { getSupabaseAdminClient } from './supabase-admin.ts';
@@ -64,6 +64,7 @@ export function createExpressApp() {
   app.use('/api/public', publicRouter);
   app.use('/api/cooperatives', cooperativesRouter);
   app.use('/api/checkout', checkoutRouter);
+  app.use('/api/buyer', buyerRouter);
   app.use('/api/orders', checkoutRouter);
   app.use('/api/coop-dashboard', coopDashboardRouter);
   app.use('/api/admin', adminRouter);

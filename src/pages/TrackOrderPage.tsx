@@ -108,10 +108,26 @@ export function TrackOrderPage() {
           placeholder={lang === 'ne' ? 'सुरक्षा टोकन' : 'Access Token'}
           className="font-mono"
         />
-        <Button type="submit" disabled={loading}>
-          <Search className="w-4 h-4" />
-          {loading ? (lang === 'ne' ? 'खोज्दै...' : 'Searching...') : lang === 'ne' ? 'ट्र्याक गर्नुहोस्' : 'Track Order'}
-        </Button>
+        <div className="flex gap-2">
+          <Button type="submit" disabled={loading} className="flex-1">
+            <Search className="w-4 h-4" />
+            {loading ? (lang === 'ne' ? 'खोज्दै...' : 'Searching...') : lang === 'ne' ? 'ट्र्याक गर्नुहोस्' : 'Track Order'}
+          </Button>
+          {(orderNumber || token || data || error) && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setOrderNumber('');
+                setToken('');
+                setData(null);
+                setError('');
+              }}
+            >
+              {lang === 'ne' ? 'खाली' : 'Clear'}
+            </Button>
+          )}
+        </div>
       </form>
 
       {error && <div className="p-4 rounded-xl border border-red-200 bg-red-50 text-sm text-[#B91C1C]">{error}</div>}

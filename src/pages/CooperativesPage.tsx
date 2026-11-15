@@ -35,12 +35,16 @@ export function CooperativesPage() {
   const [type, setType] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const fetchDirectory = async () => {
+  const fetchDirectory = async (overrides?: { q?: string; province?: string; type?: string }) => {
     setLoading(true);
+    const nextQ = overrides?.q !== undefined ? overrides.q : q;
+    const nextProv = overrides?.province !== undefined ? overrides.province : province;
+    const nextType = overrides?.type !== undefined ? overrides.type : type;
+
     const params = new URLSearchParams();
-    if (q.trim()) params.set('q', q.trim());
-    if (province) params.set('province', province);
-    if (type) params.set('type', type);
+    if (nextQ.trim()) params.set('q', nextQ.trim());
+    if (nextProv) params.set('province', nextProv);
+    if (nextType) params.set('type', nextType);
     const res = await apiFetch<{ cooperatives: DirectoryCoop[] }>(`/api/public/cooperatives?${params.toString()}`);
     if (res.ok) setCoops(res.data.cooperatives);
     setLoading(false);
@@ -50,6 +54,13 @@ export function CooperativesPage() {
     fetchDirectory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [province, type]);
+
+  const handleReset = () => {
+    setQ('');
+    setProvince('');
+    setType('');
+    fetchDirectory({ q: '', province: '', type: '' });
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
@@ -99,7 +110,16 @@ export function CooperativesPage() {
             </option>
           ))}
         </Select>
-        <Button type="submit">{lang === 'ne' ? 'खोज्नुहोस्' : 'Search'}</Button>
+        <div className="flex gap-2">
+          <Button type="submit" disabled={loading} className="flex-1">
+            {loading ? t('loading', lang) : lang === 'ne' ? 'खोज्नुहोस्' : 'Search'}
+          </Button>
+          {(q || province || type) && (
+            <Button type="button" variant="outline" onClick={handleReset}>
+              {lang === 'ne' ? 'रिसेट' : 'Reset'}
+            </Button>
+          )}
+        </div>
       </form>
 
       {loading ? (
@@ -109,8 +129,13 @@ export function CooperativesPage() {
           ))}
         </div>
       ) : coops.length === 0 ? (
-        <div className="py-14 text-center bg-white border border-[#E5E2DC] rounded-xl text-sm text-[#57534E]">
-          {lang === 'ne' ? 'कुनै सहकारी फेला परेन।' : 'No cooperatives matched your search.'}
+        <div className="py-14 text-center bg-white border border-[#E5E2DC] rounded-xl space-y-3">
+          <p className="text-sm text-[#57534E]">
+            {lang === 'ne' ? 'कुनै सहकारी फेला परेन।' : 'No cooperatives matched your search.'}
+          </p>
+          <Button variant="outline" onClick={handleReset}>
+            {lang === 'ne' ? 'फिल्टर रिसेट गर्नुहोस्' : 'Reset Filters'}
+          </Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

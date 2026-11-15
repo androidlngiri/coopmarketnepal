@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Menu, ShoppingBag, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { t } from '../lib/i18n';
@@ -22,10 +22,20 @@ export function Header() {
     { path: '/register-cooperative', label: t('navRegisterCoop', lang) },
   ];
 
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [currentPath]);
+
   const handleNav = (path: string) => {
     navigate(path);
     setMobileMenuOpen(false);
   };
+
+  const isDashboardActive =
+    currentPath.startsWith('/account') ||
+    currentPath.startsWith('/cooperative') ||
+    currentPath.startsWith('/super-admin') ||
+    (!user && currentPath.startsWith('/login'));
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-[#E5E2DC]">
@@ -92,7 +102,9 @@ export function Header() {
           <button
             type="button"
             onClick={() => handleNav(user ? dashboardPath : '/login')}
-            className="hidden sm:inline-flex h-9 px-4 rounded-lg bg-[#B91C1C] text-white hover:bg-[#991B1B] transition-colors items-center text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
+            className={`hidden sm:inline-flex h-9 px-4 rounded-lg text-white transition-colors items-center text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer ${
+              isDashboardActive ? 'bg-[#0F172A] ring-2 ring-[#B91C1C]/30' : 'bg-[#B91C1C] hover:bg-[#991B1B]'
+            }`}
           >
             {user
               ? user.role === 'buyer'
@@ -104,7 +116,7 @@ export function Header() {
           <button
             type="button"
             onClick={() => setMobileMenuOpen((v) => !v)}
-            className="md:hidden h-10 w-10 inline-flex items-center justify-center rounded-lg border border-[#E5E2DC] text-[#0F172A]"
+            className="md:hidden h-10 w-10 inline-flex items-center justify-center rounded-lg border border-[#E5E2DC] text-[#0F172A] cursor-pointer"
             aria-label="Toggle navigation menu"
           >
             {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -115,16 +127,21 @@ export function Header() {
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
         <div className="md:hidden border-t border-[#E5E2DC] bg-white px-4 py-4 space-y-2">
-          {navItems.map((item) => (
-            <button
-              key={item.path}
-              type="button"
-              onClick={() => handleNav(item.path)}
-              className="block w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium text-[#0F172A] hover:bg-[#F3F1EC]"
-            >
-              {item.label}
-            </button>
-          ))}
+          {navItems.map((item) => {
+            const active = currentPath.startsWith(item.path);
+            return (
+              <button
+                key={item.path}
+                type="button"
+                onClick={() => handleNav(item.path)}
+                className={`block w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium ${
+                  active ? 'bg-[#FAF9F6] text-[#B91C1C] font-semibold' : 'text-[#0F172A] hover:bg-[#F3F1EC]'
+                }`}
+              >
+                {item.label}
+              </button>
+            );
+          })}
           <button
             type="button"
             onClick={() => handleNav(user ? dashboardPath : '/login')}

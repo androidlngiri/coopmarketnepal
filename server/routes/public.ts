@@ -25,6 +25,8 @@ function flattenProductRow(p: Record<string, unknown>): Record<string, unknown> 
   const { cooperatives: _c, global_categories: _gc, product_images: _pi, ...rest } = p;
   return {
     ...rest,
+    ai_details_json: parseJsonField(p.ai_details_json, {}),
+    seo_keywords_json: parseJsonField(p.seo_keywords_json, []),
     image_url: pickPrimaryImage(imgs),
     cooperative_slug: coop?.slug ?? null,
     cooperative_name_ne: coop?.name_ne ?? null,
@@ -412,6 +414,7 @@ publicRouter.get('/products/:slug', async (req, res) => {
       .eq('status', 'published')
       .eq('is_prohibited', false)
       .eq('cooperatives.status', 'approved')
+      .eq('cooperatives.stores.is_published', true)
       .limit(1)
       .maybeSingle();
 
@@ -429,11 +432,12 @@ publicRouter.get('/products/:slug', async (req, res) => {
       sb.from('delivery_configs').select('*').eq('cooperative_id', product.cooperative_id).maybeSingle(),
       sb
         .from('products')
-        .select('*, product_images (image_url, is_primary, sort_order), cooperatives!inner (slug, stores!inner (store_name_ne, store_name_en))')
+        .select('*, product_images (image_url, is_primary, sort_order), cooperatives!inner (slug, stores!inner (store_name_ne, store_name_en, is_published))')
         .eq('cooperative_id', product.cooperative_id)
         .neq('id', product.id)
         .eq('status', 'published')
         .eq('is_prohibited', false)
+        .eq('cooperatives.stores.is_published', true)
         .limit(4),
     ]);
 
