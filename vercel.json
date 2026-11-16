@@ -19,6 +19,12 @@
       ]
     },
     {
+      "source": "/images/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400, stale-while-revalidate=604800" }
+      ]
+    },
+    {
       "source": "/api/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate" }
@@ -29,6 +35,31 @@
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/robots.txt", "destination": "/api/index" },
     { "source": "/sitemap.xml", "destination": "/api/index" },
-    { "source": "/((?!api|images|sitemap\\.xml|robots\\.txt).*)", "destination": "/index.html" }
+    {
+      "source": "/store/:slug",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": ".*(WhatsApp|facebookexternalhit|Facebot|Twitterbot|TelegramBot|Slackbot|LinkedInBot|Discordbot|Pinterest).*"
+        }
+      ],
+      "destination": "/api/og?type=store&slug=:slug"
+    },
+    {
+      "source": "/product/:slug",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": ".*(WhatsApp|facebookexternalhit|Facebot|Twitterbot|TelegramBot|Slackbot|LinkedInBot|Discordbot|Pinterest).*"
+        }
+      ],
+      "destination": "/api/og?type=product&slug=:slug"
+    },
+    {
+      "source": "/((?!api|images|assets|favicon\\.ico|favicon\\.svg|favicon-32x32\\.png|apple-touch-icon\\.png|sitemap\\.xml|robots\\.txt).*)",
+      "destination": "/index.html"
+    }
   ]
 }

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Toaster } from 'sonner';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
@@ -20,6 +21,32 @@ import { LegalPage } from './pages/LegalPage';
 function RouterView() {
   const { currentPath } = useApp();
   const pathname = currentPath.split('?')[0];
+
+  useEffect(() => {
+    const routeTitles: Record<string, string> = {
+      '/': 'सहकारी बजार नेपाल — राष्ट्रिय सहकारी अनलाइन बजार',
+      '/marketplace': 'बजार — सहकारी बजार नेपाल',
+      '/cooperatives': 'दर्ता सहकारी पसलहरू — सहकारी बजार नेपाल',
+      '/register-cooperative': 'सहकारी संस्था दर्ता — सहकारी बजार नेपाल',
+      '/checkout': 'चेकआउट — सहकारी बजार नेपाल',
+      '/track-order': 'अर्डर ट्र्याक — सहकारी बजार नेपाल',
+      '/login': 'प्रवेश तथा खाता — सहकारी बजार नेपाल',
+      '/account': 'मेरो खाता — सहकारी बजार नेपाल',
+      '/cooperative': 'सहकारी ड्यासबोर्ड — सहकारी बजार नेपाल',
+      '/super-admin': 'सुपर एडमिन — सहकारी बजार नेपाल',
+      '/about': 'हाम्रो बारेमा — सहकारी बजार नेपाल',
+      '/faq': 'बारम्बार सोधिने प्रश्न — सहकारी बजार नेपाल',
+      '/terms': 'प्रयोगका सर्तहरू — सहकारी बजार नेपाल',
+      '/privacy': 'गोपनीयता नीति — सहकारी बजार नेपाल',
+    };
+    if (!pathname.startsWith('/product/')) {
+      document.title = routeTitles[pathname] || routeTitles['/'];
+    }
+    const canonical = document.querySelector('link[rel="canonical"]');
+    if (canonical) {
+      canonical.setAttribute('href', `${window.location.origin}${pathname || '/'}`);
+    }
+  }, [pathname]);
 
   if (pathname === '/' || pathname === '') return <HomePage />;
   if (pathname === '/marketplace') return <MarketplacePage />;

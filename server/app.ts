@@ -45,8 +45,13 @@ export function createExpressApp() {
   });
   app.use(attachAuth);
 
-  // Serve generated static storefront showcase images
+  // Serve generated static storefront showcase images and root favicons
   app.use('/images', express.static(path.join(process.cwd(), 'public', 'images')));
+  for (const iconFile of ['favicon.ico', 'favicon.svg', 'favicon-32x32.png', 'apple-touch-icon.png']) {
+    app.get(`/${iconFile}`, (_req, res) => {
+      res.sendFile(path.join(process.cwd(), 'public', iconFile));
+    });
+  }
 
   // Health Check
   app.get('/api/health', (_req, res) => {
@@ -68,6 +73,125 @@ export function createExpressApp() {
   app.use('/api/orders', checkoutRouter);
   app.use('/api/coop-dashboard', coopDashboardRouter);
   app.use('/api/admin', adminRouter);
+
+  // Dynamic OpenGraph Preview HTML for WhatsApp / Facebook / Telegram / X crawlers on /store/:slug & /product/:slug
+  const escapeHtml = (str: string) =>
+    String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const resolvePublicBaseUrl = (req: express.Request) => {
+    const rawEnv = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL;
+    if (rawEnv) return rawEnv.replace(/\/+$/, '');
+    const host = req.get('x-forwarded-host') || req.get('host');
+    const proto = req.get('x-forwarded-proto') || req.protocol || 'https';
+    if (host) return `${proto}://${host}`;
+    return 'https://coopmarketnepal.vercel.app';
+  };
+
+  const resolveOgImageUrl = (rawUrl: unknown, baseUrl: string) => {
+    const fallback = `${baseUrl}/images/og-sahakari-bazar.jpg`;
+    if (typeof rawUrl !== 'string') return fallback;
+    const trimmed = rawUrl.trim();
+    if (!trimmed || trimmed.startsWith('data:')) return fallback;
+    if (trimmed.startsWith('https://') || trimmed.startsWith('http://')) return trimmed;
+    if (trimmed.startsWith('/')) return `${baseUrl}${trimmed}`;
+    return fallback;
+  };
+
+  app.get('/api/og', async (req, res) => {
+    const baseUrl = resolvePublicBaseUrl(req);
+    const type = String(req.query.type || '');
+    const slug = String(req.query.slug || '').trim();
+
+    let title = 'सहकारी बजार नेपाल — राष्ट्रिय सहकारी अनलाइन बजार';
+    let description =
+      'नेपालभरका दर्ता र स्वीकृत सहकारी संस्थाहरूका अर्गानिक कृषि, दुग्ध, मह, चिया तथा हस्तकला उत्पादनहरू सिधै खरिद गर्नुहोस्।';
+    let imageUrl = `${baseUrl}/images/og-sahakari-bazar.jpg`;
+    let canonicalUrl = `${baseUrl}/`;
+    let ogType = 'website';
+
+    const sb = getSupabaseAdminClient();
+    if (sb && slug) {
+      if (type === 'store') {
+        canonicalUrl = `${baseUrl}/store/${encodeURIComponent(slug)}`;
+        const { data: coop } = await sb
+          .from('cooperatives')
+          .select('name_ne, name_en, district, province, status, deleted_at, stores!inner(store_name_ne, store_name_en, tagline_ne, description_ne, banner_url, logo_url, is_published)')
+          .eq('slug', slug)
+          .eq('status', 'approved')
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        const store = coop ? (Array.isArray(coop.stores) ? coop.stores[0] : coop.stores) as Record<string, unknown> | null : null;
+        if (coop && store && store.is_published) {
+          const storeName = String(store.store_name_ne || coop.name_ne || store.store_name_en || coop.name_en);
+          title = `${storeName} — सहकारी बजार नेपाल`;
+          const rawDesc =
+            store.tagline_ne ||
+            store.description_ne ||
+            `${coop.name_ne} (${coop.district}, ${coop.province}) का प्रमाणित स्थानीय तथा अर्गानिक उत्पादनहरू सिधै खरिद गर्नुहोस्।`;
+          description = String(rawDesc).slice(0, 160);
+          imageUrl = resolveOgImageUrl(store.banner_url || store.logo_url, baseUrl);
+        }
+      } else if (type === 'product') {
+        canonicalUrl = `${baseUrl}/product/${encodeURIComponent(slug)}`;
+        const { data: prod } = await sb
+          .from('products')
+          .select('name_ne, name_en, short_desc_ne, price_npr, discount_price_npr, unit_label_ne, status, deleted_at, is_prohibited, product_images(image_url, is_primary), cooperatives!inner(name_ne, status, deleted_at, stores!inner(store_name_ne, is_published))')
+          .eq('slug', slug)
+          .eq('status', 'published')
+          .is('deleted_at', null)
+          .eq('is_prohibited', false)
+          .maybeSingle();
+
+        const coop = prod ? (Array.isArray(prod.cooperatives) ? prod.cooperatives[0] : prod.cooperatives) as Record<string, unknown> | null : null;
+        const store = coop ? (Array.isArray(coop.stores) ? coop.stores[0] : coop.stores) as Record<string, unknown> | null : null;
+        if (prod && coop && coop.status === 'approved' && !coop.deleted_at && store?.is_published) {
+          const activePrice = prod.discount_price_npr && Number(prod.discount_price_npr) > 0 ? prod.discount_price_npr : prod.price_npr;
+          const storeName = String(store.store_name_ne || coop.name_ne || 'सहकारी बजार नेपाल');
+          title = `${prod.name_ne} (रु. ${activePrice}/${prod.unit_label_ne}) — ${storeName}`;
+          description = String(prod.short_desc_ne || `${storeName} बाट प्रमाणित ${prod.name_ne} सिधै अर्डर गर्नुहोस्।`).slice(0, 160);
+          const imgs = (prod.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
+          const primaryImg = imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url;
+          imageUrl = resolveOgImageUrl(primaryImg, baseUrl);
+          ogType = 'product';
+        }
+      }
+    }
+
+    const html = `<!doctype html>
+<html lang="ne">
+  <head>
+    <meta charset="UTF-8" />
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+    <meta property="og:type" content="${ogType}" />
+    <meta property="og:url" content="${escapeHtml(canonicalUrl)}" />
+    <meta property="og:site_name" content="सहकारी बजार नेपाल — Sahakari Bazar Nepal" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:secure_url" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:alt" content="${escapeHtml(title)}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
+  </head>
+  <body>
+    <p><a href="${escapeHtml(canonicalUrl)}">${escapeHtml(title)}</a></p>
+  </body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    res.send(html);
+  });
 
   // Dynamic SEO Sitemap & Robots.txt backed by Supabase PostgreSQL
   app.get('/robots.txt', (req, res) => {
