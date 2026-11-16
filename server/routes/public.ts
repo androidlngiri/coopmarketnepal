@@ -48,7 +48,7 @@ function flattenProductRow(p: Record<string, unknown>): Record<string, unknown> 
     cooperative_status: coop?.status ?? null,
     store_name_ne: store?.store_name_ne ?? null,
     store_name_en: store?.store_name_en ?? null,
-    store_logo_url: store?.logo_url ?? null,
+    store_logo_url: resolveStoreLogo(store?.logo_url, coop?.logo_url),
     primary_color: store?.primary_color ?? null,
     category_name_ne: cat?.name_ne ?? null,
     category_name_en: cat?.name_en ?? null,
@@ -351,7 +351,7 @@ publicRouter.get('/products', async (req, res) => {
         `*,
          product_images (image_url, is_primary, sort_order),
          global_categories (name_ne, name_en, slug),
-         cooperatives!inner (id, slug, name_ne, name_en, district, status, deleted_at, stores!inner (store_name_ne, store_name_en, is_published))`
+         cooperatives!inner (id, slug, name_ne, name_en, district, logo_url, status, deleted_at, stores!inner (store_name_ne, store_name_en, logo_url, is_published))`
       )
       .eq('status', 'published')
       .is('deleted_at', null)
