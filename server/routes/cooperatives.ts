@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import { createSession, rateLimit, requireAuth, writeAuditLog } from '../auth.ts';
 import { issueOtp, normalizeNepalPhone, verifyOtpCode } from '../akash-sms.ts';
-import { createSupabaseAuthUser, requireSupabaseAdmin } from '../supabase-admin.ts';
+import { createSupabaseAuthUser, requireSupabaseAdmin, verifySupabaseUserPassword } from '../supabase-admin.ts';
 import { resolveDocumentAccessUrl, uploadBase64ToSupabaseStorage } from '../storage.ts';
 
 export const cooperativesRouter = Router();
@@ -15,7 +15,7 @@ function slugify(input: string): string {
     .slice(0, 48);
 }
 
-cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), async (req, res) => {
+cooperativesRouter.post('/register', rateLimit('coop_reg', 10, 15 * 60 * 1000), async (req, res) => {
   const sb = requireSupabaseAdmin();
   const body = req.body || {};
   const {
@@ -67,8 +67,111 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
   }
 
   const normalizedPhone = normalizeNepalPhone(String(contactPhone));
+  const cleanEmail = contactEmail ? String(contactEmail).trim().toLowerCase() : null;
+  const cleanRegNo = String(registrationNumber).trim();
   const baseSlug = slugify(String(requestedSlug || requestedStoreName || nameEn)) || `coop-${Date.now()}`;
   const uniqueSlug = `${baseSlug}-${crypto.randomBytes(2).toString('hex')}`;
+
+  const authUser = req.authUser || null;
+  const isUpgradingBuyer = Boolean(authUser);
+
+  if (authUser && authUser.role !== 'buyer') {
+    return res.status(403).json({
+      error:
+        'तपाईंको लगइन खाता पहिले नै सहकारी वा एडमिन भूमिकामा आबद्ध छ। अर्को सहकारी दर्ता गर्न पहिले बाहिर निस्कनुहोस् (Sign Out)।',
+      code: 'ALREADY_HAS_ROLE',
+    });
+  }
+
+  let previousBuyerProfile: {
+    full_name: string;
+    full_name_ne: string | null;
+    email: string | null;
+    phone: string | null;
+    phone_verified_at: string | null;
+  } | null = null;
+
+  if (authUser) {
+    const [{ data: existingOwned }, { data: existingStaff }, { data: currentProfile }] = await Promise.all([
+      sb.from('cooperatives').select('id').eq('owner_user_id', authUser.id).limit(1).maybeSingle(),
+      sb.from('cooperative_staff').select('id').eq('user_id', authUser.id).eq('is_active', true).limit(1).maybeSingle(),
+      sb
+        .from('profiles')
+        .select('full_name, full_name_ne, email, phone, role, phone_verified_at')
+        .eq('id', authUser.id)
+        .maybeSingle(),
+    ]);
+
+    if (existingOwned || existingStaff || !currentProfile || currentProfile.role !== 'buyer') {
+      return res.status(403).json({
+        error: 'तपाईंको खाता पहिले नै अर्को सहकारी संस्थासँग आबद्ध छ।',
+        code: 'ALREADY_HAS_COOPERATIVE',
+      });
+    }
+
+    const passwordValid = await verifySupabaseUserPassword(authUser.id, String(password));
+    if (!passwordValid) {
+      return res.status(403).json({
+        error:
+          'तपाईंको हालको खाता पासवर्ड मिलेन। कृपया क्रेता खाता लगइन गर्दा प्रयोग गर्नुभएको पासवर्ड प्रविष्ट गर्नुहोस्।',
+        code: 'INVALID_ACCOUNT_PASSWORD',
+      });
+    }
+
+    previousBuyerProfile = {
+      full_name: currentProfile.full_name,
+      full_name_ne: currentProfile.full_name_ne,
+      email: currentProfile.email,
+      phone: currentProfile.phone,
+      phone_verified_at: currentProfile.phone_verified_at,
+    };
+  }
+
+  // Pre-check duplicate cooperative registration number
+  const { data: dupReg } = await sb
+    .from('cooperatives')
+    .select('id')
+    .eq('registration_number', cleanRegNo)
+    .limit(1)
+    .maybeSingle();
+
+  if (dupReg) {
+    return res.status(400).json({
+      error: 'यो सहकारी दर्ता नम्बर पहिले नै अर्को सहकारीमा दर्ता भइसकेको छ।',
+      code: 'DUPLICATE_REG_NUMBER',
+    });
+  }
+
+  // Pre-check duplicate phone or email across profiles
+  let phoneConflictQuery = sb.from('profiles').select('id').eq('phone', normalizedPhone).limit(1);
+  if (authUser) {
+    phoneConflictQuery = phoneConflictQuery.neq('id', authUser.id);
+  }
+  const { data: phoneConflict } = await phoneConflictQuery.maybeSingle();
+
+  let emailConflict: { id: string } | null = null;
+  if (cleanEmail) {
+    let emailConflictQuery = sb.from('profiles').select('id').ilike('email', cleanEmail).limit(1);
+    if (authUser) {
+      emailConflictQuery = emailConflictQuery.neq('id', authUser.id);
+    }
+    const { data } = await emailConflictQuery.maybeSingle();
+    emailConflict = data;
+  }
+
+  if (phoneConflict || emailConflict) {
+    if (authUser) {
+      return res.status(400).json({
+        error: 'तपाईंले प्रविष्ट गर्नुभएको मोबाइल नम्बर वा इमेल अर्को खातामा दर्ता भइसकेको छ।',
+        code: 'DUPLICATE_CONTACT',
+      });
+    }
+    return res.status(409).json({
+      error:
+        'यो मोबाइल नम्बर वा इमेल पहिले नै खातामा दर्ता भइसकेको छ। यदि तपाईंले पहिले क्रेता (Buyer) खाता खोल्नुभएको हो भने, पहिले सोही खातामा लगइन गरी यही पेजबाट सहकारी खातामा स्तरोन्नति (Upgrade) गर्न सक्नुहुन्छ।',
+      code: 'EXISTING_ACCOUNT_LOGIN_TO_UPGRADE',
+    });
+  }
 
   let initialStatus: 'pending_otp' | 'pending_review' = 'pending_otp';
   let otpVerifiedAt: string | null = null;
@@ -117,16 +220,47 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
   const validCoopType = allowedCoopTypes.includes(String(cooperativeType || '')) ? String(cooperativeType) : 'multipurpose';
 
   try {
-    const createdUser = await createSupabaseAuthUser({
-      email: contactEmail ? String(contactEmail).trim().toLowerCase() : null,
-      phone: normalizedPhone,
-      password: String(password),
-      fullName: String(authorizedRepName).trim(),
-      fullNameNe: String(authorizedRepName).trim(),
-      role: 'cooperative_admin',
-      phoneVerifiedAt: otpVerifiedAt,
-    });
-    userId = createdUser.id;
+    if (isUpgradingBuyer && authUser && previousBuyerProfile) {
+      userId = authUser.id;
+      const nextPhone = previousBuyerProfile.phone || normalizedPhone;
+      const nextEmail = previousBuyerProfile.email || cleanEmail;
+
+      const { error: upgradeProfErr } = await sb
+        .from('profiles')
+        .update({
+          role: 'cooperative_admin',
+          full_name: String(authorizedRepName).trim(),
+          full_name_ne: String(authorizedRepName).trim(),
+          phone: nextPhone,
+          email: nextEmail,
+          ...(otpVerifiedAt && nextPhone === normalizedPhone ? { phone_verified_at: otpVerifiedAt } : {}),
+        })
+        .eq('id', userId)
+        .eq('role', 'buyer');
+
+      if (upgradeProfErr) {
+        throw new Error(upgradeProfErr.code === '23505' ? 'DUPLICATE_USER' : upgradeProfErr.message);
+      }
+
+      await sb.auth.admin.updateUserById(userId, {
+        user_metadata: {
+          full_name: String(authorizedRepName).trim(),
+          role: 'cooperative_admin',
+        },
+        ...(otpVerifiedAt ? { phone_confirm: true } : {}),
+      });
+    } else {
+      const createdUser = await createSupabaseAuthUser({
+        email: cleanEmail,
+        phone: normalizedPhone,
+        password: String(password),
+        fullName: String(authorizedRepName).trim(),
+        fullNameNe: String(authorizedRepName).trim(),
+        role: 'cooperative_admin',
+        phoneVerifiedAt: otpVerifiedAt,
+      });
+      userId = createdUser.id;
+    }
 
     const { data: coopRow, error: coopErr } = await sb
       .from('cooperatives')
@@ -135,7 +269,7 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
         slug: uniqueSlug,
         name_ne: String(nameNe).trim(),
         name_en: String(nameEn).trim(),
-        registration_number: String(registrationNumber).trim(),
+        registration_number: cleanRegNo,
         registration_authority: String(registrationAuthority).trim(),
         registration_date_ad: String(registrationDateAd),
         registration_date_bs: registrationDateBs ? String(registrationDateBs) : null,
@@ -146,7 +280,7 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
         municipality: String(municipality).trim(),
         ward_number: String(wardNumber).trim(),
         tole_address: String(toleAddress).trim(),
-        contact_email: contactEmail ? String(contactEmail).trim().toLowerCase() : null,
+        contact_email: cleanEmail,
         contact_phone: normalizedPhone,
         authorized_rep_name: String(authorizedRepName).trim(),
         authorized_rep_designation: String(authorizedRepDesignation).trim(),
@@ -159,7 +293,7 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
       .single();
 
     if (coopErr || !coopRow) {
-      throw new Error(coopErr?.code === '23505' ? 'DUPLICATE' : coopErr?.message || 'Coop insert failed');
+      throw new Error(coopErr?.code === '23505' ? 'DUPLICATE_REG_NUMBER' : coopErr?.message || 'Coop insert failed');
     }
     coopId = coopRow.id;
 
@@ -178,7 +312,13 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
       cooperative_id: coopId,
       from_status: null,
       to_status: initialStatus,
-      reason: initialStatus === 'pending_review' ? 'OTP verified during registration' : 'Registered awaiting OTP verification',
+      reason: isUpgradingBuyer
+        ? initialStatus === 'pending_review'
+          ? 'Upgraded from buyer account & OTP verified'
+          : 'Upgraded from buyer account awaiting OTP verification'
+        : initialStatus === 'pending_review'
+        ? 'OTP verified during registration'
+        : 'Registered awaiting OTP verification',
       changed_by: userId,
     });
 
@@ -196,7 +336,7 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
       logo_url: savedLogoUrl || '/images/hero-nepal-cooperative.jpg',
       banner_url: '/images/hero-nepal-cooperative.jpg',
       contact_phone: normalizedPhone,
-      contact_email: contactEmail ? String(contactEmail).trim().toLowerCase() : null,
+      contact_email: cleanEmail,
       address_text: `${municipality}-${wardNumber}, ${district}`,
       sections_json: defaultSections,
       is_published: false,
@@ -237,10 +377,10 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
       actorUserId: userId,
       actorRole: 'cooperative_admin',
       cooperativeId: coopId,
-      action: 'cooperative_registered',
+      action: isUpgradingBuyer ? 'buyer_upgraded_to_cooperative' : 'cooperative_registered',
       entityType: 'cooperative',
       entityId: coopId,
-      metadata: { status: initialStatus, registrationNumber },
+      metadata: { status: initialStatus, registrationNumber: cleanRegNo, upgradedFromBuyer: isUpgradingBuyer },
       ipAddress: req.ip,
     });
 
@@ -254,15 +394,44 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 6, 15 * 60 * 1000), a
     }
 
     await createSession(userId, req, res);
-    res.status(201).json({ cooperative: coopRow, otpResult });
+    res.status(201).json({ cooperative: coopRow, otpResult, upgradedFromBuyer: isUpgradingBuyer });
   } catch (err) {
     if (userId && !coopId) {
-      await sb.auth.admin.deleteUser(userId);
+      if (isUpgradingBuyer && previousBuyerProfile) {
+        await sb
+          .from('profiles')
+          .update({
+            role: 'buyer',
+            full_name: previousBuyerProfile.full_name,
+            full_name_ne: previousBuyerProfile.full_name_ne,
+            phone: previousBuyerProfile.phone,
+            email: previousBuyerProfile.email,
+            phone_verified_at: previousBuyerProfile.phone_verified_at,
+          })
+          .eq('id', userId);
+        await sb.auth.admin.updateUserById(userId, {
+          user_metadata: {
+            full_name: previousBuyerProfile.full_name,
+            role: 'buyer',
+          },
+        });
+      } else {
+        await sb.auth.admin.deleteUser(userId);
+      }
     }
     const msg = err instanceof Error ? err.message : '';
-    if (msg === 'DUPLICATE_USER' || msg === 'DUPLICATE' || msg.includes('duplicate')) {
+    if (msg === 'DUPLICATE_REG_NUMBER') {
       return res.status(400).json({
-        error: 'यो दर्ता नम्बर, मोबाइल नम्बर वा इमेल पहिले नै दर्ता भइसकेको छ।',
+        error: 'यो सहकारी दर्ता नम्बर पहिले नै अर्को सहकारीमा दर्ता भइसकेको छ।',
+        code: 'DUPLICATE_REG_NUMBER',
+      });
+    }
+    if (msg === 'DUPLICATE_USER' || msg === 'DUPLICATE' || msg.includes('duplicate')) {
+      return res.status(isUpgradingBuyer ? 400 : 409).json({
+        error: isUpgradingBuyer
+          ? 'यो मोबाइल नम्बर वा इमेल अर्को खातामा दर्ता भइसकेको छ।'
+          : 'यो मोबाइल नम्बर वा इमेल पहिले नै खातामा दर्ता भइसकेको छ। यदि तपाईंले पहिले क्रेता (Buyer) खाता खोल्नुभएको हो भने, पहिले सोही खातामा लगइन गरी यही पेजबाट सहकारी खातामा स्तरोन्नति (Upgrade) गर्न सक्नुहुन्छ।',
+        code: isUpgradingBuyer ? 'DUPLICATE_CONTACT' : 'EXISTING_ACCOUNT_LOGIN_TO_UPGRADE',
       });
     }
     return res.status(500).json({ error: 'सहकारी दर्ता प्रक्रियामा त्रुटि भयो।' });

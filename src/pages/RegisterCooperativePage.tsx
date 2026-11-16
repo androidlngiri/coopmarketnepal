@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { CheckCircle2, ShieldCheck, Upload } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, Info, LogIn, ShieldCheck, Store, Upload } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { NEPAL_PROVINCES } from '../lib/bs-date';
@@ -9,11 +9,15 @@ import { Button } from '../components/ui/button';
 import { toast } from 'sonner';
 
 export function RegisterCooperativePage() {
-  const { lang, navigate, refreshSession } = useApp();
+  const { lang, user, logout, navigate, refreshSession } = useApp();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [submitting, setSubmitting] = useState(false);
   const [otpSending, setOtpSending] = useState(false);
   const [otpNotice, setOtpNotice] = useState('');
+  const [duplicateUpgradePrompt, setDuplicateUpgradePrompt] = useState<string | null>(null);
+
+  const isBuyerUpgrade = user?.role === 'buyer';
+  const isExistingCoopOrAdmin = Boolean(user && user.role !== 'buyer');
 
   const [form, setForm] = useState({
     nameNe: '',
@@ -41,6 +45,18 @@ export function RegisterCooperativePage() {
     documentFileName: '',
     otpCode: '',
   });
+
+  useEffect(() => {
+    if (user?.role === 'buyer') {
+      setDuplicateUpgradePrompt(null);
+      setForm((prev) => ({
+        ...prev,
+        contactEmail: prev.contactEmail || user.email || '',
+        contactPhone: prev.contactPhone || user.phone || '',
+        authorizedRepName: prev.authorizedRepName || user.full_name || '',
+      }));
+    }
+  }, [user]);
 
   const districts = NEPAL_PROVINCES[form.province]?.districts || [];
 
@@ -87,19 +103,39 @@ export function RegisterCooperativePage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setDuplicateUpgradePrompt(null);
     setSubmitting(true);
-    const res = await apiFetch<{ cooperative: { id: string; status: string } }>('/api/cooperatives/register', {
+    const res = await apiFetch<{
+      cooperative?: { id: string; status: string };
+      upgradedFromBuyer?: boolean;
+      code?: string;
+    }>('/api/cooperatives/register', {
       method: 'POST',
-      body: JSON.stringify(form),
+      body: JSON.stringify({
+        ...form,
+        upgradeExistingAccount: isBuyerUpgrade,
+      }),
     });
     setSubmitting(false);
     if (!res.ok) {
+      if (res.data?.code === 'EXISTING_ACCOUNT_LOGIN_TO_UPGRADE') {
+        setDuplicateUpgradePrompt(
+          res.error ||
+            (lang === 'ne'
+              ? 'यो मोबाइल नम्बर वा इमेल पहिले नै खातामा दर्ता भइसकेको छ।'
+              : 'This email or phone number is already registered.')
+        );
+      }
       toast.error(res.error || 'दर्ता असफल भयो।');
       return;
     }
     await refreshSession();
     toast.success(
-      lang === 'ne'
+      res.data.upgradedFromBuyer
+        ? lang === 'ne'
+          ? 'तपाईंको खाता सहकारीमा स्तरोन्नति भई आवेदन पेश भयो!'
+          : 'Your account has been upgraded and cooperative application submitted!'
+        : lang === 'ne'
         ? 'सहकारी दर्ता पेश भयो! सुपर एडमिन समीक्षाको लागि ड्यासबोर्डमा जाँदैछ।'
         : 'Cooperative application submitted!'
     );
@@ -163,6 +199,54 @@ export function RegisterCooperativePage() {
             : 'Workflow: Registration → Mobile OTP → Admin Review → Subscription Activation → Store Publication.'}
         </p>
       </div>
+
+      {isBuyerUpgrade && (
+        <div className="p-4 rounded-xl border border-[#15803D]/30 bg-[#15803D]/5 space-y-1.5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#15803D]">
+            <Store className="w-4 h-4 shrink-0" />
+            <span>
+              {lang === 'ne'
+                ? 'क्रेता (Buyer) खाताबाट सिधै सहकारी दर्ता तथा खाता स्तरोन्नति'
+                : 'Upgrade Signed-In Buyer Account to Cooperative Admin'}
+            </span>
+          </div>
+          <p className="text-xs text-[#44403C] leading-relaxed">
+            {lang === 'ne'
+              ? `तपाईं हाल ${user.email || user.phone} बाट लगइन हुनुहुन्छ। यही इमेल र मोबाइल नम्बर प्रयोग गरेर सहकारी दर्ता गर्दा तपाईंको खाता स्वतः सहकारी प्रशासक (Cooperative Admin) मा स्तरोन्नति हुनेछ—नयाँ फोन वा इमेल राख्नु पर्दैन। चरण ३ मा हालको खाताको पासवर्ड पुष्टि गर्नुहोस्।`
+              : `You are signed in as ${user.email || user.phone}. Completing this form will upgrade your existing account to Cooperative Admin using your same email and phone number. Just confirm your current password in Step 3.`}
+          </p>
+        </div>
+      )}
+
+      {isExistingCoopOrAdmin && (
+        <div className="p-4 rounded-xl border border-amber-300 bg-amber-50 space-y-2.5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
+            <Info className="w-4 h-4 shrink-0" />
+            <span>
+              {lang === 'ne'
+                ? 'यो खाता पहिले नै सहकारी वा एडमिन भूमिकामा आबद्ध छ'
+                : 'This Account Already Has Cooperative or Admin Access'}
+            </span>
+          </div>
+          <p className="text-xs text-amber-800">
+            {lang === 'ne'
+              ? `हालको खाता (${user?.email || user?.phone}) बाट अर्को सहकारी दर्ता गर्न मिल्दैन। हालको ड्यासबोर्डमा जानुहोस् वा नयाँ सहकारी दर्ता गर्न पहिले बाहिर निस्कनुहोस्।`
+              : `Your signed-in account (${user?.email || user?.phone}) cannot register another cooperative. Go to your dashboard or sign out first to register a separate cooperative.`}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => navigate(user?.role === 'super_admin' ? '/super-admin' : '/cooperative')}
+            >
+              {lang === 'ne' ? 'ड्यासबोर्डमा जानुहोस्' : 'Go to Dashboard'}
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={logout}>
+              {lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Stepper */}
       <div className="grid grid-cols-3 gap-2">
@@ -469,7 +553,13 @@ export function RegisterCooperativePage() {
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5">
-                  {lang === 'ne' ? 'पासवर्ड (कम्तीमा ६ अक्षर) *' : 'Account Password (min 6 chars) *'}
+                  {isBuyerUpgrade
+                    ? lang === 'ne'
+                      ? 'हालको खाता पासवर्ड पुष्टि गर्नुहोस् *'
+                      : 'Confirm Current Account Password *'
+                    : lang === 'ne'
+                    ? 'पासवर्ड (कम्तीमा ६ अक्षर) *'
+                    : 'Account Password (min 6 chars) *'}
                 </label>
                 <Input
                   type="password"
@@ -478,6 +568,13 @@ export function RegisterCooperativePage() {
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                 />
+                {isBuyerUpgrade && (
+                  <p className="text-[11px] text-[#57534E] mt-1">
+                    {lang === 'ne'
+                      ? 'क्रेता खाता दर्ता गर्दा राख्नुभएको हालको पासवर्ड प्रविष्ट गरी प्रमाणित गर्नुहोस्।'
+                      : 'Enter your existing buyer account password to verify ownership.'}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -521,16 +618,48 @@ export function RegisterCooperativePage() {
               </div>
             </div>
 
+            {duplicateUpgradePrompt && !isBuyerUpgrade && (
+              <div className="p-4 rounded-xl border border-amber-300 bg-amber-50 space-y-2.5">
+                <div className="flex items-start gap-2 text-xs text-amber-900">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+                  <div className="space-y-1">
+                    <p className="font-semibold">
+                      {lang === 'ne'
+                        ? 'यो नम्बर वा इमेल पहिले नै क्रेता खातामा दर्ता भइसकेको छ?'
+                        : 'Already Registered This Phone or Email as a Buyer?'}
+                    </p>
+                    <p className="text-amber-800 leading-relaxed">{duplicateUpgradePrompt}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pl-6">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => navigate('/login?redirect=/register-cooperative')}
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    {lang === 'ne'
+                      ? 'लगइन गरेर यही खाता सहकारीमा अपग्रेड गर्नुहोस्'
+                      : 'Sign In & Upgrade Existing Account'}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-between pt-2">
               <Button type="button" variant="outline" onClick={() => setStep(2)}>
                 {lang === 'ne' ? '← पछाडि' : '← Back'}
               </Button>
-              <Button type="submit" disabled={submitting}>
+              <Button type="submit" disabled={submitting || isExistingCoopOrAdmin}>
                 <CheckCircle2 className="w-4 h-4" />
                 {submitting
                   ? lang === 'ne'
                     ? 'पेश हुँदैछ...'
                     : 'Submitting...'
+                  : isBuyerUpgrade
+                  ? lang === 'ne'
+                    ? 'खाता अपग्रेड गरी सहकारी दर्ता गर्नुहोस्'
+                    : 'Upgrade Account & Register Cooperative'
                   : lang === 'ne'
                   ? 'दर्ता आवेदन पेश गर्नुहोस्'
                   : 'Submit Cooperative Application'}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Heart, LogOut, MapPin, Package, RotateCcw, Trash2 } from 'lucide-react';
+import { Heart, LogOut, MapPin, Package, RotateCcw, Store, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { formatDateBS, formatNPR, NEPAL_PROVINCES, toNepaliDigits } from '../lib/bs-date';
@@ -226,6 +226,12 @@ export function BuyerAccountPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {user.role === 'buyer' && (
+            <Button variant="outline" onClick={() => navigate('/register-cooperative')}>
+              <Store className="w-4 h-4" />
+              {lang === 'ne' ? 'सहकारी पसल दर्ता / अपग्रेड' : 'Register Cooperative'}
+            </Button>
+          )}
           {(user.role === 'cooperative_admin' || user.role === 'cooperative_staff') && (
             <Button variant="outline" onClick={() => navigate('/cooperative')}>
               {lang === 'ne' ? 'सहकारी ड्यासबोर्ड' : 'Cooperative Dashboard'}
@@ -242,6 +248,27 @@ export function BuyerAccountPage() {
           </Button>
         </div>
       </div>
+
+      {user.role === 'buyer' && (
+        <div className="bg-[#FAF9F6] border border-[#E5E2DC] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <p className="text-sm font-semibold text-[#0F172A]">
+              {lang === 'ne'
+                ? 'गल्तीले क्रेता (Buyer) खाता खोल्नुभएको हो वा सहकारी पसल चलाउनुहुन्छ?'
+                : 'Registered as a Buyer by mistake or opening a Cooperative Store?'}
+            </p>
+            <p className="text-xs text-[#57534E]">
+              {lang === 'ne'
+                ? 'तपाईंले यही मोबाइल नम्बर र इमेल प्रयोग गरी आफ्नो क्रेता खातालाई सिधै सहकारी प्रशासक (Cooperative Admin) मा अपग्रेड गर्न सक्नुहुन्छ।'
+                : 'You can upgrade this exact account using the same email and phone number without creating a new account.'}
+            </p>
+          </div>
+          <Button size="sm" variant="secondary" onClick={() => navigate('/register-cooperative')} className="shrink-0">
+            <Store className="w-4 h-4" />
+            {lang === 'ne' ? 'सहकारी दर्ता गर्नुहोस्' : 'Upgrade & Register'}
+          </Button>
+        </div>
+      )}
 
       <div className="flex gap-2 border-b border-[#E5E2DC] overflow-x-auto">
         {[

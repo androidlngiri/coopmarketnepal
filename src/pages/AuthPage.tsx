@@ -33,13 +33,16 @@ export function AuthPage() {
     });
   }, []);
 
+  const redirectParam = new URLSearchParams(window.location.search).get('redirect') || '';
+  const safeRedirect = redirectParam.startsWith('/') && !redirectParam.startsWith('//') ? redirectParam : null;
+
   if (user) {
     const dashboardPath =
       user.role === 'super_admin'
         ? '/super-admin'
         : user.role === 'cooperative_admin' || user.role === 'cooperative_staff'
         ? '/cooperative'
-        : '/account';
+        : safeRedirect || '/account';
 
     return (
       <div className="max-w-md mx-auto px-4 py-16">
@@ -53,7 +56,13 @@ export function AuthPage() {
           </p>
           <div className="flex flex-col sm:flex-row gap-2 pt-2">
             <Button className="flex-1" onClick={() => navigate(dashboardPath)}>
-              {lang === 'ne' ? 'ड्यासबोर्डमा जानुहोस्' : 'Go to Dashboard'}
+              {safeRedirect === '/register-cooperative' && user.role === 'buyer'
+                ? lang === 'ne'
+                  ? 'सहकारी दर्तामा जानुहोस्'
+                  : 'Continue to Cooperative Registration'
+                : lang === 'ne'
+                ? 'ड्यासबोर्डमा जानुहोस्'
+                : 'Go to Dashboard'}
             </Button>
             <Button variant="outline" className="flex-1" onClick={logout}>
               {lang === 'ne' ? 'बाहिर निस्कनुहोस्' : 'Sign Out'}
@@ -104,9 +113,15 @@ export function AuthPage() {
     await refreshSession();
     toast.success(lang === 'ne' ? 'सफलतापूर्वक प्रवेश भयो।' : 'Signed in successfully.');
     const role = res.data.user.role;
-    if (role === 'super_admin') navigate('/super-admin');
-    else if (role === 'cooperative_admin' || role === 'cooperative_staff') navigate('/cooperative');
-    else navigate('/account');
+    if (safeRedirect && (role === 'buyer' || safeRedirect !== '/register-cooperative')) {
+      navigate(safeRedirect);
+    } else if (role === 'super_admin') {
+      navigate('/super-admin');
+    } else if (role === 'cooperative_admin' || role === 'cooperative_staff') {
+      navigate('/cooperative');
+    } else {
+      navigate('/account');
+    }
   };
 
   const handleRegisterBuyer = async (e: React.FormEvent) => {
