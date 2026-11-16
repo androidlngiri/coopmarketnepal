@@ -34,8 +34,9 @@ async function buildValidatedGroups(
     .select(
       `*,
        product_images (image_url, is_primary, sort_order),
-       cooperatives!inner (id, name_ne, name_en, slug, status, stores!inner (store_name_ne, store_name_en, is_published))`
+       cooperatives!inner (id, name_ne, name_en, slug, status, deleted_at, stores!inner (store_name_ne, store_name_en, is_published))`
     )
+    .is('deleted_at', null)
     .in('id', productIds);
 
   if (prodErr) throw new Error(prodErr.message);
@@ -83,7 +84,7 @@ async function buildValidatedGroups(
     const imgs = (raw.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
     const primaryImg = imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url || null;
 
-    if (coop.status !== 'approved' || !store?.is_published) {
+    if (coop.status !== 'approved' || coop.deleted_at || !store?.is_published) {
       throw new Error(`सहकारी पसल स्वीकृत वा प्रकाशित छैन (${coop.name_ne})।`);
     }
     if (raw.status !== 'published' || raw.is_prohibited || raw.availability_status === 'discontinued') {

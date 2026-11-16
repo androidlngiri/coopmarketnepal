@@ -81,7 +81,7 @@ export function ProductCard({ product }: { product: ProductRecord }) {
       discountPriceNpr: product.discount_price_npr,
       unitLabelNe: product.unit_label_ne,
       unitLabelEn: product.unit_label_en,
-      imageUrl: product.image_url || '/images/product-ilam-tea.jpg',
+      imageUrl: product.image_url || '',
       stockQuantity: product.stock_quantity,
     });
     toast.success(lang === 'ne' ? `${title} कार्टमा थपियो` : `${title} added to cart`);

@@ -185,7 +185,7 @@ export function BuyerAccountPage() {
           discountPriceNpr: null,
           unitLabelNe: item.unit_label,
           unitLabelEn: item.unit_label,
-          imageUrl: item.image_url || '/images/product-ilam-tea.jpg',
+          imageUrl: item.image_url || '',
           stockQuantity: Number(item.stock_quantity || 1),
         },
         qty

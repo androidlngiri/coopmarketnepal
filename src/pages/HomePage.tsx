@@ -115,25 +115,31 @@ export function HomePage() {
           <div className="p-5">
             <p className="text-xs text-[#57534E]">{lang === 'ne' ? 'स्वीकृत सहकारी पसल' : 'Verified Cooperatives'}</p>
             <p className="mt-1 text-2xl font-bold text-[#0F172A] tabular-nums">
-              {lang === 'ne'
-                ? toNepaliDigits(data?.stats.approved_cooperatives ?? 4)
-                : data?.stats.approved_cooperatives ?? 4}
+              {loading
+                ? '—'
+                : lang === 'ne'
+                ? toNepaliDigits(data?.stats.approved_cooperatives ?? 0)
+                : data?.stats.approved_cooperatives ?? 0}
             </p>
           </div>
           <div className="p-5">
             <p className="text-xs text-[#57534E]">{lang === 'ne' ? 'उपलब्ध उत्पादन' : 'Published Products'}</p>
             <p className="mt-1 text-2xl font-bold text-[#0F172A] tabular-nums">
-              {lang === 'ne'
-                ? toNepaliDigits(data?.stats.published_products ?? 8)
-                : data?.stats.published_products ?? 8}
+              {loading
+                ? '—'
+                : lang === 'ne'
+                ? toNepaliDigits(data?.stats.published_products ?? 0)
+                : data?.stats.published_products ?? 0}
             </p>
           </div>
           <div className="p-5">
             <p className="text-xs text-[#57534E]">{lang === 'ne' ? 'सक्रिय जिल्ला' : 'Districts Covered'}</p>
             <p className="mt-1 text-2xl font-bold text-[#0F172A] tabular-nums">
-              {lang === 'ne'
-                ? toNepaliDigits(data?.stats.covered_districts ?? 4)
-                : data?.stats.covered_districts ?? 4}
+              {loading
+                ? '—'
+                : lang === 'ne'
+                ? toNepaliDigits(data?.stats.covered_districts ?? 0)
+                : data?.stats.covered_districts ?? 0}
             </p>
           </div>
           <div className="p-5">

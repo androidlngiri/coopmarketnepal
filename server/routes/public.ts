@@ -60,6 +60,7 @@ publicRouter.get('/marketplace', async (_req, res) => {
            products (id, status, is_prohibited)`
         )
         .eq('status', 'approved')
+        .is('deleted_at', null)
         .eq('stores.is_published', true)
         .order('is_featured', { ascending: false })
         .order('created_at', { ascending: false })
@@ -70,11 +71,13 @@ publicRouter.get('/marketplace', async (_req, res) => {
           `*,
            product_images (image_url, is_primary, sort_order),
            global_categories (name_ne, name_en, slug),
-           cooperatives!inner (id, slug, name_ne, name_en, district, status, stores!inner (store_name_ne, store_name_en, is_published))`
+           cooperatives!inner (id, slug, name_ne, name_en, district, status, deleted_at, stores!inner (store_name_ne, store_name_en, is_published))`
         )
         .eq('status', 'published')
+        .is('deleted_at', null)
         .eq('is_prohibited', false)
         .eq('cooperatives.status', 'approved')
+        .is('cooperatives.deleted_at', null)
         .eq('cooperatives.stores.is_published', true)
         .order('is_platform_featured', { ascending: false })
         .order('is_featured', { ascending: false })
@@ -118,15 +121,17 @@ publicRouter.get('/marketplace', async (_req, res) => {
     const branding = brandingRes.data ? parseJsonField(brandingRes.data.value_json, {}) : {};
 
     const [{ count: approvedCount }, { data: allApprovedDistricts }] = await Promise.all([
-      sb.from('cooperatives').select('*', { count: 'exact', head: true }).eq('status', 'approved'),
-      sb.from('cooperatives').select('district').eq('status', 'approved'),
+      sb.from('cooperatives').select('*', { count: 'exact', head: true }).eq('status', 'approved').is('deleted_at', null),
+      sb.from('cooperatives').select('district').eq('status', 'approved').is('deleted_at', null),
     ]);
     const { count: publishedCount } = await sb
       .from('products')
-      .select('id, cooperatives!inner(status)', { count: 'exact', head: true })
+      .select('id, cooperatives!inner(status, deleted_at)', { count: 'exact', head: true })
       .eq('status', 'published')
+      .is('deleted_at', null)
       .eq('is_prohibited', false)
-      .eq('cooperatives.status', 'approved');
+      .eq('cooperatives.status', 'approved')
+      .is('cooperatives.deleted_at', null);
 
     const coveredDistricts = new Set((allApprovedDistricts || []).map((d: { district: string }) => d.district)).size;
 
@@ -161,6 +166,7 @@ publicRouter.get('/cooperatives', async (req, res) => {
          products (id, status, is_prohibited)`
       )
       .eq('status', 'approved')
+      .is('deleted_at', null)
       .eq('stores.is_published', true)
       .order('is_featured', { ascending: false })
       .order('name_en', { ascending: true });
@@ -222,6 +228,7 @@ publicRouter.get('/stores/:slug', async (req, res) => {
       .from('cooperatives')
       .select('*')
       .eq('slug', req.params.slug)
+      .is('deleted_at', null)
       .limit(1)
       .maybeSingle();
 
@@ -260,6 +267,7 @@ publicRouter.get('/stores/:slug', async (req, res) => {
         .select('*, product_images (image_url, is_primary, sort_order), global_categories (name_ne, name_en, slug)')
         .eq('cooperative_id', coop.id)
         .eq('status', 'published')
+        .is('deleted_at', null)
         .eq('is_prohibited', false)
         .order('is_featured', { ascending: false })
         .order('created_at', { ascending: false }),
@@ -329,11 +337,13 @@ publicRouter.get('/products', async (req, res) => {
         `*,
          product_images (image_url, is_primary, sort_order),
          global_categories (name_ne, name_en, slug),
-         cooperatives!inner (id, slug, name_ne, name_en, district, status, stores!inner (store_name_ne, store_name_en, is_published))`
+         cooperatives!inner (id, slug, name_ne, name_en, district, status, deleted_at, stores!inner (store_name_ne, store_name_en, is_published))`
       )
       .eq('status', 'published')
+      .is('deleted_at', null)
       .eq('is_prohibited', false)
       .eq('cooperatives.status', 'approved')
+      .is('cooperatives.deleted_at', null)
       .eq('cooperatives.stores.is_published', true);
 
     if (cooperativeId && String(cooperativeId).trim()) {
@@ -407,13 +417,15 @@ publicRouter.get('/products/:slug', async (req, res) => {
         `*,
          product_images (*),
          global_categories (name_ne, name_en, slug),
-         cooperatives!inner (id, slug, name_ne, name_en, district, province, municipality, registration_number, status,
+         cooperatives!inner (id, slug, name_ne, name_en, district, province, municipality, registration_number, status, deleted_at,
            stores!inner (store_name_ne, store_name_en, logo_url, primary_color, is_published))`
       )
       .eq('slug', req.params.slug)
       .eq('status', 'published')
+      .is('deleted_at', null)
       .eq('is_prohibited', false)
       .eq('cooperatives.status', 'approved')
+      .is('cooperatives.deleted_at', null)
       .eq('cooperatives.stores.is_published', true)
       .limit(1)
       .maybeSingle();
@@ -432,11 +444,13 @@ publicRouter.get('/products/:slug', async (req, res) => {
       sb.from('delivery_configs').select('*').eq('cooperative_id', product.cooperative_id).maybeSingle(),
       sb
         .from('products')
-        .select('*, product_images (image_url, is_primary, sort_order), cooperatives!inner (slug, stores!inner (store_name_ne, store_name_en, is_published))')
+        .select('*, product_images (image_url, is_primary, sort_order), cooperatives!inner (slug, deleted_at, stores!inner (store_name_ne, store_name_en, is_published))')
         .eq('cooperative_id', product.cooperative_id)
         .neq('id', product.id)
         .eq('status', 'published')
+        .is('deleted_at', null)
         .eq('is_prohibited', false)
+        .is('cooperatives.deleted_at', null)
         .eq('cooperatives.stores.is_published', true)
         .limit(4),
     ]);
@@ -454,4 +468,15 @@ publicRouter.get('/products/:slug', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Product fetch failed' });
   }
+});
+
+publicRouter.get('/legal/:doc', async (req, res) => {
+  const allowed = ['about', 'faq', 'terms', 'privacy'];
+  const doc = String(req.params.doc || '');
+  if (!allowed.includes(doc)) {
+    return res.status(404).json({ error: 'Document not found' });
+  }
+  const sb = requireSupabaseAdmin();
+  const { data } = await sb.from('platform_settings').select('value_json').eq('key', `legal_${doc}`).maybeSingle();
+  res.json({ doc, custom: data ? parseJsonField(data.value_json, null) : null });
 });

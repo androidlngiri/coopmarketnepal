@@ -2,8 +2,22 @@ import { Router } from 'express';
 import { requireSuperAdmin, writeAuditLog } from '../auth.ts';
 import { isAkashSmsConfigured, sendAkashSms } from '../akash-sms.ts';
 import { getGeminiModel, isGeminiConfigured } from '../gemini.ts';
-import { parseJsonField, requireSupabaseAdmin, verifySupabaseConnection } from '../supabase-admin.ts';
+import {
+  parseJsonField,
+  requireSupabaseAdmin,
+  verifySupabaseConnection,
+  verifySupabaseUserPassword,
+} from '../supabase-admin.ts';
 import { resolveDocumentAccessUrl } from '../storage.ts';
+import {
+  createVerifiedBackupSnapshot,
+  executeSafeCleanup,
+  previewCleanupTargets,
+  restoreFromBackup,
+  runMaintenanceScan,
+  type CleanupMode,
+  type TargetRef,
+} from '../services/maintenance.ts';
 
 export const adminRouter = Router();
 
@@ -55,6 +69,7 @@ adminRouter.get('/cooperatives', async (_req, res) => {
        cooperative_documents (*),
        cooperative_status_history (*)`
     )
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
   const enriched = await Promise.all(
@@ -262,6 +277,7 @@ adminRouter.get('/marketplace-controls', async (_req, res) => {
     sb
       .from('products')
       .select('*, cooperatives (name_ne, name_en, slug), global_categories (name_ne, name_en), product_images (image_url, is_primary)')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(200),
     sb.from('platform_settings').select('value_json').eq('key', 'branding').maybeSingle(),
@@ -506,4 +522,255 @@ adminRouter.post('/test-sms', async (req, res) => {
     purpose: 'admin_test_sms',
   });
   res.status(result.sent ? 200 : 400).json(result);
+});
+
+// System Data Cleanup & Maintenance Module (Super Admin only + Password Re-Auth for mutations)
+adminRouter.get('/maintenance/scan', async (_req, res) => {
+  try {
+    const report = await runMaintenanceScan();
+    res.json(report);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Maintenance scan failed' });
+  }
+});
+
+adminRouter.post('/maintenance/preview', async (req, res) => {
+  try {
+    const targets = Array.isArray(req.body?.targets) ? (req.body.targets as TargetRef[]) : [];
+    const mode: CleanupMode = req.body?.mode === 'permanent_delete' ? 'permanent_delete' : 'soft_archive';
+    if (targets.length === 0) {
+      return res.status(400).json({ error: 'कम्तीमा १ रेकर्ड छान्नुहोस्।' });
+    }
+    if (targets.length > 500) {
+      return res.status(400).json({ error: 'एक पटकमा अधिकतम ५०० रेकर्ड मात्र पूर्वावलोकन गर्न मिल्छ।' });
+    }
+    const preview = await previewCleanupTargets(targets, mode);
+    res.json(preview);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Cleanup preview failed' });
+  }
+});
+
+adminRouter.get('/maintenance/backups', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb
+    .from('cleanup_backups')
+    .select(
+      'id, backup_label, category, mode, table_counts_json, record_count, checksum_sha256, created_by, restored_at, restored_by, restore_notes, created_at, profiles:created_by (full_name)'
+    )
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const backups = (data || []).map((row: Record<string, unknown>) => {
+    const prof = (Array.isArray(row.profiles) ? row.profiles[0] : row.profiles) as { full_name?: string } | null;
+    const { profiles: _p, ...rest } = row;
+    return {
+      ...rest,
+      created_by_name: prof?.full_name ?? null,
+    };
+  });
+
+  res.json({ backups });
+});
+
+adminRouter.post('/maintenance/backup', async (req, res) => {
+  try {
+    const targets = Array.isArray(req.body?.targets) ? (req.body.targets as TargetRef[]) : [];
+    const category = String(req.body?.category || 'manual_backup').slice(0, 64);
+    const backupLabel =
+      String(req.body?.backupLabel || '').trim() || `Manual Snapshot (${category}) — ${new Date().toISOString().slice(0, 16)}`;
+
+    if (targets.length === 0) {
+      return res.status(400).json({ error: 'ब्याकअप गर्न कम्तीमा १ रेकर्ड छान्नुहोस्।' });
+    }
+    if (targets.length > 500) {
+      return res.status(400).json({ error: 'एक पटकमा अधिकतम ५०० रेकर्ड ब्याकअप गर्न मिल्छ।' });
+    }
+
+    const backup = await createVerifiedBackupSnapshot({
+      targets,
+      category,
+      mode: 'manual_backup',
+      backupLabel,
+      adminUserId: req.authUser!.id,
+    });
+
+    await writeAuditLog({
+      actorUserId: req.authUser!.id,
+      actorRole: 'super_admin',
+      action: 'maintenance_backup_created',
+      entityType: 'cleanup_backup',
+      entityId: String(backup.id),
+      metadata: { category, recordCount: backup.record_count },
+      ipAddress: req.ip,
+    });
+
+    res.status(201).json({ backup });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Backup failed' });
+  }
+});
+
+adminRouter.get('/maintenance/backups/:id/download', async (req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb
+    .from('cleanup_backups')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'ब्याकअप फाइल फेला परेन।' });
+  }
+
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="sahakari-backup-${req.params.id.slice(0, 8)}.json"`);
+  res.send(
+    JSON.stringify(
+      {
+        backupId: data.id,
+        label: data.backup_label,
+        category: data.category,
+        mode: data.mode,
+        checksumSha256: data.checksum_sha256,
+        recordCount: data.record_count,
+        tableCounts: data.table_counts_json,
+        createdAt: data.created_at,
+        snapshot: data.snapshot_json,
+      },
+      null,
+      2
+    )
+  );
+});
+
+adminRouter.post('/maintenance/backups/:id/restore', async (req, res) => {
+  try {
+    const password = String(req.body?.password || '');
+    const reason = String(req.body?.reason || '').trim();
+    if (!password) {
+      return res.status(400).json({ error: 'पुनःस्थापनाको लागि सुपर एडमिन पासवर्ड पुन: प्रविष्ट गर्नुहोस्।' });
+    }
+    const validPass = await verifySupabaseUserPassword(req.authUser!.id, password);
+    if (!validPass) {
+      return res.status(403).json({ error: 'सुपर एडमिन पासवर्ड मिलेन। पुनःस्थापना अस्वीकृत गरियो।' });
+    }
+
+    const result = await restoreFromBackup({
+      backupId: req.params.id,
+      adminUserId: req.authUser!.id,
+      reason: reason || 'Super Admin backup recovery',
+      ipAddress: req.ip,
+    });
+
+    await writeAuditLog({
+      actorUserId: req.authUser!.id,
+      actorRole: 'super_admin',
+      action: 'maintenance_backup_restored',
+      entityType: 'cleanup_backup',
+      entityId: req.params.id,
+      metadata: result,
+      ipAddress: req.ip,
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Restore failed' });
+  }
+});
+
+adminRouter.post('/maintenance/execute', async (req, res) => {
+  try {
+    const targets = Array.isArray(req.body?.targets) ? (req.body.targets as TargetRef[]) : [];
+    const mode: CleanupMode = req.body?.mode === 'permanent_delete' ? 'permanent_delete' : 'soft_archive';
+    const category = String(req.body?.category || 'data_cleanup').slice(0, 64);
+    const reason = String(req.body?.reason || '').trim();
+    const password = String(req.body?.password || '');
+    const confirmPhrase = String(req.body?.confirmPhrase || '').trim().toUpperCase();
+
+    if (targets.length === 0) {
+      return res.status(400).json({ error: 'सफाई गर्न कम्तीमा १ रेकर्ड छान्नुहोस्।' });
+    }
+    if (targets.length > 500) {
+      return res.status(400).json({ error: 'असीमित मेटाउने कार्य रोकिएको छ — एक पटकमा अधिकतम ५०० रेकर्ड मात्र।' });
+    }
+    if (reason.length < 5) {
+      return res.status(400).json({ error: 'कम्तीमा ५ अक्षरको स्पष्ट सफाई कारण प्रविष्ट गर्नुहोस्।' });
+    }
+    if (confirmPhrase !== 'CONFIRM CLEANUP') {
+      return res.status(400).json({ error: 'सफाई पुष्टि गर्न "CONFIRM CLEANUP" टाइप गर्नुहोस्।' });
+    }
+    if (!password) {
+      return res.status(400).json({ error: 'उच्च-प्रभाव कार्यको लागि सुपर एडमिन पासवर्ड प्रमाणीकरण अनिवार्य छ।' });
+    }
+
+    const validPass = await verifySupabaseUserPassword(req.authUser!.id, password);
+    if (!validPass) {
+      return res.status(403).json({ error: 'सुपर एडमिन पासवर्ड मिलेन। डाटा सफाई रोकियो।' });
+    }
+
+    const result = await executeSafeCleanup({
+      targets,
+      mode,
+      category,
+      reason,
+      adminUserId: req.authUser!.id,
+      ipAddress: req.ip,
+    });
+
+    await writeAuditLog({
+      actorUserId: req.authUser!.id,
+      actorRole: 'super_admin',
+      action: `maintenance_${mode}`,
+      entityType: 'cleanup_audit_logs',
+      entityId: String(result.backupId),
+      metadata: {
+        category,
+        deletedCount: result.deletedCount,
+        retainedCount: result.retainedCount,
+        skippedCount: result.skippedCount,
+        failedCount: result.failedCount,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Cleanup execution failed' });
+  }
+});
+
+adminRouter.get('/maintenance/history', async (_req, res) => {
+  const sb = requireSupabaseAdmin();
+  const { data, error } = await sb
+    .from('cleanup_audit_logs')
+    .select(
+      '*, profiles:admin_user_id (full_name, email), cleanup_backups:backup_id (backup_label, checksum_sha256, record_count)'
+    )
+    .order('created_at', { ascending: false })
+    .limit(120);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const history = (data || []).map((row: Record<string, unknown>) => {
+    const adminProf = (Array.isArray(row.profiles) ? row.profiles[0] : row.profiles) as { full_name?: string; email?: string } | null;
+    const backup = (Array.isArray(row.cleanup_backups) ? row.cleanup_backups[0] : row.cleanup_backups) as {
+      backup_label?: string;
+      checksum_sha256?: string;
+      record_count?: number;
+    } | null;
+    const { profiles: _p, cleanup_backups: _b, ...rest } = row;
+    return {
+      ...rest,
+      admin_name: adminProf?.full_name ?? null,
+      admin_email: adminProf?.email ?? null,
+      backup_label: backup?.backup_label ?? null,
+      backup_checksum: backup?.checksum_sha256 ?? null,
+      backup_record_count: backup?.record_count ?? 0,
+    };
+  });
+
+  res.json({ history });
 });

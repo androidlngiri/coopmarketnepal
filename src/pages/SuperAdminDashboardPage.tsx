@@ -3,6 +3,7 @@ import {
   Activity,
   Building2,
   CreditCard,
+  Database,
   Eye,
   Globe,
   LayoutDashboard,
@@ -19,9 +20,10 @@ import { labelFor, STATUS_LABELS } from '../lib/i18n';
 import { Input, Select } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
+import { DataCleanupMaintenancePanel } from '../components/admin/DataCleanupMaintenancePanel';
 import { toast } from 'sonner';
 
-type AdminTab = 'overview' | 'cooperatives' | 'plans' | 'marketplace' | 'users' | 'logs';
+type AdminTab = 'overview' | 'cooperatives' | 'plans' | 'marketplace' | 'users' | 'logs' | 'maintenance';
 
 interface ConfirmState {
   open: boolean;
@@ -324,6 +326,24 @@ export function SuperAdminDashboardPage() {
             </button>
           ))}
         </nav>
+
+        <div className="pt-3 border-t border-[#E5E2DC] space-y-1.5">
+          <p className="px-2 text-[10px] font-semibold uppercase tracking-wider text-[#78716C]">
+            {lang === 'ne' ? 'प्रणाली मर्मत (System Maintenance)' : 'System Maintenance'}
+          </p>
+          <button
+            type="button"
+            onClick={() => setTab('maintenance')}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium cursor-pointer text-left ${
+              tab === 'maintenance' ? 'bg-[#B91C1C] text-white' : 'text-[#57534E] hover:bg-[#F3F1EC]'
+            }`}
+          >
+            <Database className="w-4 h-4 shrink-0" />
+            <span className="truncate">
+              {lang === 'ne' ? 'डाटा सफाई र मर्मत' : 'Data Cleanup & Maintenance'}
+            </span>
+          </button>
+        </div>
       </aside>
 
       <div className="lg:col-span-9 space-y-6">
@@ -1403,6 +1423,8 @@ export function SuperAdminDashboardPage() {
             </div>
           </div>
         )}
+
+        {tab === 'maintenance' && <DataCleanupMaintenancePanel />}
       </div>
 
       {/* COOPERATIVE DETAILS MODAL */}

@@ -1,9 +1,28 @@
+import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { apiFetch } from '../lib/utils';
+
+interface LegalDocContent {
+  titleNe: string;
+  titleEn: string;
+  bodyNe: string[];
+  bodyEn: string[];
+}
 
 export function LegalPage({ doc }: { doc: 'about' | 'faq' | 'terms' | 'privacy' }) {
   const { lang } = useApp();
+  const [customContent, setCustomContent] = useState<Partial<LegalDocContent> | null>(null);
 
-  const content: Record<typeof doc, { titleNe: string; titleEn: string; bodyNe: string[]; bodyEn: string[] }> = {
+  useEffect(() => {
+    setCustomContent(null);
+    apiFetch<{ custom: Partial<LegalDocContent> | null }>(`/api/public/legal/${doc}`).then((res) => {
+      if (res.ok && res.data.custom) {
+        setCustomContent(res.data.custom);
+      }
+    });
+  }, [doc]);
+
+  const content: Record<typeof doc, LegalDocContent> = {
     about: {
       titleNe: 'सहकारी बजारको बारेमा',
       titleEn: 'About Sahakari Bazar',
@@ -56,15 +75,19 @@ export function LegalPage({ doc }: { doc: 'about' | 'faq' | 'terms' | 'privacy' 
     },
   };
 
-  const entry = content[doc];
+  const defaults = content[doc];
+  const titleNe = customContent?.titleNe || defaults.titleNe;
+  const titleEn = customContent?.titleEn || defaults.titleEn;
+  const bodyNe = Array.isArray(customContent?.bodyNe) && customContent.bodyNe.length > 0 ? customContent.bodyNe : defaults.bodyNe;
+  const bodyEn = Array.isArray(customContent?.bodyEn) && customContent.bodyEn.length > 0 ? customContent.bodyEn : defaults.bodyEn;
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 space-y-6">
       <h1 className="font-display text-3xl font-bold text-[#0F172A] border-b border-[#E5E2DC] pb-4">
-        {lang === 'ne' ? entry.titleNe : entry.titleEn}
+        {lang === 'ne' ? titleNe : titleEn}
       </h1>
       <div className="bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-4 text-sm text-[#57534E] leading-relaxed">
-        {(lang === 'ne' ? entry.bodyNe : entry.bodyEn).map((para, idx) => (
+        {(lang === 'ne' ? bodyNe : bodyEn).map((para, idx) => (
           <p key={idx}>{para}</p>
         ))}
       </div>

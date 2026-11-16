@@ -61,7 +61,7 @@ export function ProductDetailPage({ slug }: { slug: string }) {
     apiFetch<ProductDetailResponse>(`/api/public/products/${slug}`).then((res) => {
       if (res.ok) {
         setData(res.data);
-        setActiveImage(res.data.images[0]?.image_url || '/images/product-ilam-tea.jpg');
+        setActiveImage(res.data.images[0]?.image_url || '');
       } else {
         setError(res.error || 'उत्पादन फेला परेन।');
       }

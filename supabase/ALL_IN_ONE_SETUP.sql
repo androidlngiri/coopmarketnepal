@@ -1947,6 +1947,85 @@ AS $$
 $$;
 
 -- ============================================================================
+-- Migration 0007: System Data Cleanup, Soft-Archive Recovery & Audit Trail
+-- ============================================================================
+ALTER TABLE public.cooperatives
+  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS deleted_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS delete_reason TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_cooperatives_deleted_at ON public.cooperatives(deleted_at);
+
+ALTER TABLE public.products
+  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS deleted_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS delete_reason TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_products_deleted_at ON public.products(deleted_at);
+
+CREATE TABLE IF NOT EXISTS public.cleanup_backups (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  backup_label TEXT NOT NULL,
+  category TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'manual_backup' CHECK (mode IN ('soft_archive', 'permanent_delete', 'manual_backup')),
+  table_counts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  record_count INTEGER NOT NULL DEFAULT 0 CHECK (record_count >= 0),
+  snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  checksum_sha256 TEXT NOT NULL,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  restored_at TIMESTAMPTZ,
+  restored_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  restore_notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cleanup_backups_created ON public.cleanup_backups(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.cleanup_audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_user_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  category TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('soft_archive', 'permanent_delete', 'restore_backup')),
+  reason TEXT NOT NULL,
+  filters_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  selected_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  deleted_count INTEGER NOT NULL DEFAULT 0,
+  retained_count INTEGER NOT NULL DEFAULT 0,
+  skipped_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  backup_id UUID REFERENCES public.cleanup_backups(id) ON DELETE RESTRICT,
+  execution_status TEXT NOT NULL CHECK (execution_status IN ('completed', 'partial', 'blocked', 'failed')),
+  details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cleanup_audit_logs_created ON public.cleanup_audit_logs(created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.prevent_cleanup_audit_mutation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'cleanup_audit_logs is immutable and cannot be modified or deleted.';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_cleanup_audit_logs_immutable ON public.cleanup_audit_logs;
+CREATE TRIGGER trg_cleanup_audit_logs_immutable
+  BEFORE UPDATE OR DELETE ON public.cleanup_audit_logs
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_cleanup_audit_mutation();
+
+ALTER TABLE public.cleanup_backups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cleanup_audit_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "cleanup_backups_super_admin_read" ON public.cleanup_backups;
+CREATE POLICY "cleanup_backups_super_admin_read" ON public.cleanup_backups FOR SELECT
+  USING (public.is_super_admin());
+
+DROP POLICY IF EXISTS "cleanup_audit_logs_super_admin_read" ON public.cleanup_audit_logs;
+CREATE POLICY "cleanup_audit_logs_super_admin_read" ON public.cleanup_audit_logs FOR SELECT
+  USING (public.is_super_admin());
+
+-- ============================================================================
 -- Sahakari Bazar (सहकारी बजार) — Idempotent Production Seed Data
 -- ============================================================================
 

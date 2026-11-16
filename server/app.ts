@@ -95,13 +95,16 @@ export function createExpressApp() {
           .from('cooperatives')
           .select('slug, stores!inner(is_published)')
           .eq('status', 'approved')
+          .is('deleted_at', null)
           .eq('stores.is_published', true),
         sb
           .from('products')
-          .select('slug, cooperatives!inner(status)')
+          .select('slug, cooperatives!inner(status, deleted_at)')
           .eq('status', 'published')
+          .is('deleted_at', null)
           .eq('is_prohibited', false)
-          .eq('cooperatives.status', 'approved'),
+          .eq('cooperatives.status', 'approved')
+          .is('cooperatives.deleted_at', null),
       ]);
       storeSlugs = (sRes.data || []).map((s: { slug: string }) => s.slug);
       productSlugs = (pRes.data || []).map((p: { slug: string }) => p.slug);

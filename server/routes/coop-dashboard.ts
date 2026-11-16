@@ -525,6 +525,7 @@ coopDashboardRouter.get('/products', requireCooperativeAccess(), async (req, res
     .from('products')
     .select('*, product_images (image_url, is_primary), global_categories (name_ne, name_en)')
     .eq('cooperative_id', req.cooperativeId!)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
   const products = (rawProducts || []).map((p: Record<string, unknown>) => {
@@ -573,6 +574,7 @@ coopDashboardRouter.post('/products', requireCooperativeAccess('manage_products'
     .from('products')
     .select('*', { count: 'exact', head: true })
     .eq('cooperative_id', coopId)
+    .is('deleted_at', null)
     .neq('status', 'archived');
 
   const maxProducts = Number(sub?.max_products || 15);
@@ -580,7 +582,7 @@ coopDashboardRouter.post('/products', requireCooperativeAccess('manage_products'
     return res.status(403).json({ error: `तपाईंको योजनाको अधिकतम उत्पादन सीमा (${maxProducts}) पूरा भएको छ।` });
   }
 
-  let imageUrl = b.imageUrl || '/images/product-ilam-tea.jpg';
+  let imageUrl: string | null = b.imageUrl ? String(b.imageUrl) : null;
   if (b.imageBase64 && String(b.imageBase64).startsWith('data:')) {
     try {
       imageUrl = (
@@ -649,13 +651,15 @@ coopDashboardRouter.post('/products', requireCooperativeAccess('manage_products'
   }
 
   await Promise.all([
-    sb.from('product_images').insert({
-      product_id: prod.id,
-      cooperative_id: coopId,
-      image_url: imageUrl,
-      alt_text: String(b.nameEn),
-      is_primary: true,
-    }),
+    imageUrl
+      ? sb.from('product_images').insert({
+          product_id: prod.id,
+          cooperative_id: coopId,
+          image_url: imageUrl,
+          alt_text: String(b.nameEn),
+          is_primary: true,
+        })
+      : Promise.resolve(),
     sb.from('inventory_movements').insert({
       cooperative_id: coopId,
       product_id: prod.id,
