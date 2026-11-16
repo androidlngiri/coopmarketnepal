@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Menu, ShoppingBag, X } from 'lucide-react';
+import { LogOut, Menu, ShoppingBag, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { t } from '../lib/i18n';
 import { toNepaliDigits } from '../lib/bs-date';
 
 export function Header() {
-  const { lang, setLang, user, navigate, currentPath, cartCount, setCartOpen } = useApp();
+  const { lang, setLang, user, logout, navigate, currentPath, cartCount, setCartOpen } = useApp();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const dashboardPath =
@@ -15,11 +15,13 @@ export function Header() {
       ? '/cooperative'
       : '/account';
 
+  const canRegisterCoop = !user || user.role === 'buyer';
+
   const navItems = [
     { path: '/marketplace', label: t('navMarketplace', lang) },
     { path: '/cooperatives', label: t('navCooperatives', lang) },
     { path: '/track-order', label: t('navTrackOrder', lang) },
-    { path: '/register-cooperative', label: t('navRegisterCoop', lang) },
+    ...(canRegisterCoop ? [{ path: '/register-cooperative', label: t('navRegisterCoop', lang) }] : []),
   ];
 
   useEffect(() => {
@@ -113,6 +115,18 @@ export function Header() {
               : t('navSignIn', lang)}
           </button>
 
+          {user && (
+            <button
+              type="button"
+              onClick={logout}
+              title={lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}
+              aria-label={lang === 'ne' ? 'बाहिर निस्कनुहोस्' : 'Sign Out'}
+              className="hidden sm:inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[#E5E2DC] text-[#57534E] hover:text-[#B91C1C] hover:bg-[#F3F1EC] transition-colors shrink-0 cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setMobileMenuOpen((v) => !v)}
@@ -149,6 +163,19 @@ export function Header() {
           >
             {user ? (user.role === 'buyer' ? t('navAccount', lang) : t('navDashboard', lang)) : t('navSignIn', lang)}
           </button>
+          {user && (
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                logout();
+              }}
+              className="flex w-full items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium border border-[#E5E2DC] text-[#57534E] hover:text-[#B91C1C]"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>{lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}</span>
+            </button>
+          )}
         </div>
       )}
     </header>

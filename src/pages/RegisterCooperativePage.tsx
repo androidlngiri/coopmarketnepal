@@ -185,6 +185,40 @@ export function RegisterCooperativePage() {
     setStep(targetStep);
   };
 
+  if (isExistingCoopOrAdmin && user) {
+    const dashboardPath = user.role === 'super_admin' ? '/super-admin' : '/cooperative';
+    return (
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16">
+        <div className="bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-4">
+          <div className="flex items-center gap-2.5 text-[#0F172A]">
+            <Info className="w-5 h-5 text-[#B91C1C] shrink-0" />
+            <h1 className="font-display text-xl sm:text-2xl font-bold">
+              {lang === 'ne'
+                ? 'तपाईंको सहकारी वा एडमिन खाता पहिले नै सक्रिय छ'
+                : 'Your Cooperative or Admin Account Is Already Active'}
+            </h1>
+          </div>
+          <p className="text-sm text-[#57534E] leading-relaxed">
+            {lang === 'ne'
+              ? `तपाईं हाल ${user.email || user.phone} बाट लगइन हुनुहुन्छ। एउटै खाताबाट अर्को छुट्टै सहकारी दर्ता गर्न मिल्दैन। तपाईं सिधै आफ्नो ड्यासबोर्डमा जान सक्नुहुन्छ, वा अर्को नयाँ सहकारी दर्ता गर्न पहिले बाहिर निस्कन सक्नुहुन्छ।`
+              : `You are currently signed in as ${user.email || user.phone}. A single account cannot register a second cooperative. Open your dashboard below, or sign out first to register a separate cooperative.`}
+          </p>
+          <div className="flex flex-wrap gap-3 pt-2">
+            <Button type="button" onClick={() => navigate(dashboardPath)}>
+              {lang === 'ne' ? 'मेरो ड्यासबोर्डमा जानुहोस्' : 'Go to My Dashboard'}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => navigate('/marketplace')}>
+              {lang === 'ne' ? 'बजार हेर्नुहोस्' : 'Browse Marketplace'}
+            </Button>
+            <Button type="button" variant="outline" onClick={logout}>
+              {lang === 'ne' ? 'नयाँ सहकारी दर्ता गर्न बाहिर निस्कनुहोस्' : 'Sign Out to Register Another'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-8">
       <div className="space-y-2 border-b border-[#E5E2DC] pb-5">
@@ -216,36 +250,6 @@ export function RegisterCooperativePage() {
               ? `तपाईं हाल ${user.email || user.phone} बाट लगइन हुनुहुन्छ। यही इमेल र मोबाइल नम्बर प्रयोग गरेर सहकारी दर्ता गर्दा तपाईंको खाता स्वतः सहकारी प्रशासक (Cooperative Admin) मा स्तरोन्नति हुनेछ—नयाँ फोन वा इमेल राख्नु पर्दैन। चरण ३ मा हालको खाताको पासवर्ड पुष्टि गर्नुहोस्।`
               : `You are signed in as ${user.email || user.phone}. Completing this form will upgrade your existing account to Cooperative Admin using your same email and phone number. Just confirm your current password in Step 3.`}
           </p>
-        </div>
-      )}
-
-      {isExistingCoopOrAdmin && (
-        <div className="p-4 rounded-xl border border-amber-300 bg-amber-50 space-y-2.5">
-          <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
-            <Info className="w-4 h-4 shrink-0" />
-            <span>
-              {lang === 'ne'
-                ? 'यो खाता पहिले नै सहकारी वा एडमिन भूमिकामा आबद्ध छ'
-                : 'This Account Already Has Cooperative or Admin Access'}
-            </span>
-          </div>
-          <p className="text-xs text-amber-800">
-            {lang === 'ne'
-              ? `हालको खाता (${user?.email || user?.phone}) बाट अर्को सहकारी दर्ता गर्न मिल्दैन। हालको ड्यासबोर्डमा जानुहोस् वा नयाँ सहकारी दर्ता गर्न पहिले बाहिर निस्कनुहोस्।`
-              : `Your signed-in account (${user?.email || user?.phone}) cannot register another cooperative. Go to your dashboard or sign out first to register a separate cooperative.`}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => navigate(user?.role === 'super_admin' ? '/super-admin' : '/cooperative')}
-            >
-              {lang === 'ne' ? 'ड्यासबोर्डमा जानुहोस्' : 'Go to Dashboard'}
-            </Button>
-            <Button type="button" size="sm" variant="outline" onClick={logout}>
-              {lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}
-            </Button>
-          </div>
         </div>
       )}
 

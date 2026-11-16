@@ -28,7 +28,9 @@ interface DirectoryCoop {
 }
 
 export function CooperativesPage() {
-  const { lang, navigate } = useApp();
+  const { lang, navigate, user } = useApp();
+  const isCoopUser = Boolean(user && (user.role === 'cooperative_admin' || user.role === 'cooperative_staff'));
+  const isSuperAdmin = user?.role === 'super_admin';
   const [coops, setCoops] = useState<DirectoryCoop[]>([]);
   const [q, setQ] = useState('');
   const [province, setProvince] = useState('');
@@ -75,7 +77,21 @@ export function CooperativesPage() {
               : 'Browse government-registered and admin-verified cooperatives operating independent storefronts.'}
           </p>
         </div>
-        <Button onClick={() => navigate('/register-cooperative')}>{t('openCoopStore', lang)}</Button>
+        <Button
+          onClick={() =>
+            navigate(isSuperAdmin ? '/super-admin' : isCoopUser ? '/cooperative' : '/register-cooperative')
+          }
+        >
+          {isSuperAdmin
+            ? lang === 'ne'
+              ? 'सुपर एडमिन प्यानल'
+              : 'Super Admin Panel'
+            : isCoopUser
+            ? lang === 'ne'
+              ? 'मेरो सहकारी ड्यासबोर्ड'
+              : 'My Coop Dashboard'
+            : t('openCoopStore', lang)}
+        </Button>
       </div>
 
       <form

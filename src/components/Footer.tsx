@@ -3,8 +3,18 @@ import { formatDateBS } from '../lib/bs-date';
 import { t } from '../lib/i18n';
 
 export function Footer() {
-  const { lang, navigate } = useApp();
+  const { lang, navigate, user } = useApp();
   const todayBs = formatDateBS(new Date(), lang);
+  const isExistingCoopOrAdmin = Boolean(user && user.role !== 'buyer');
+  const workspacePath = user?.role === 'super_admin' ? '/super-admin' : '/cooperative';
+  const workspaceLabel =
+    user?.role === 'super_admin'
+      ? lang === 'ne'
+        ? 'सुपर एडमिन प्यानल'
+        : 'Super Admin Panel'
+      : lang === 'ne'
+      ? 'सहकारी ड्यासबोर्ड'
+      : 'Cooperative Dashboard';
 
   return (
     <footer className="border-t border-[#E5E2DC] bg-white mt-16">
@@ -49,16 +59,29 @@ export function Footer() {
               </a>
             </li>
             <li>
-              <a
-                href="/register-cooperative"
-                onClick={(e) => {
-                  e.preventDefault();
-                  navigate('/register-cooperative');
-                }}
-                className="hover:text-[#0F172A]"
-              >
-                {t('navRegisterCoop', lang)}
-              </a>
+              {isExistingCoopOrAdmin ? (
+                <a
+                  href={workspacePath}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigate(workspacePath);
+                  }}
+                  className="hover:text-[#0F172A]"
+                >
+                  {workspaceLabel}
+                </a>
+              ) : (
+                <a
+                  href="/register-cooperative"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigate('/register-cooperative');
+                  }}
+                  className="hover:text-[#0F172A]"
+                >
+                  {t('navRegisterCoop', lang)}
+                </a>
+              )}
             </li>
             <li>
               <a

@@ -143,7 +143,10 @@ export function BuyerAccountPage() {
 
   const handleRemoveWishlist = async (productId: string) => {
     setRemovingWishId(productId);
-    const res = await apiFetch<{ saved: boolean }>(`/api/buyer/wishlist/${productId}`, { method: 'POST' });
+    const res = await apiFetch<{ saved: boolean }>('/api/buyer/wishlist/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ productId }),
+    });
     setRemovingWishId(null);
     if (!res.ok) {
       toast.error(res.error || (lang === 'ne' ? 'इच्छा सूची अद्यावधिक असफल भयो।' : 'Failed to update wishlist.'));

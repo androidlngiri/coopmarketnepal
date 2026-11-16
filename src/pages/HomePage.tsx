@@ -51,7 +51,19 @@ interface MarketplacePayload {
 }
 
 export function HomePage() {
-  const { lang, navigate } = useApp();
+  const { lang, navigate, user } = useApp();
+  const isCoopUser = Boolean(user && (user.role === 'cooperative_admin' || user.role === 'cooperative_staff'));
+  const isSuperAdmin = user?.role === 'super_admin';
+  const coopCtaPath = isSuperAdmin ? '/super-admin' : isCoopUser ? '/cooperative' : '/register-cooperative';
+  const coopCtaLabel = isSuperAdmin
+    ? lang === 'ne'
+      ? 'सुपर एडमिन प्यानल'
+      : 'Super Admin Panel'
+    : isCoopUser
+    ? lang === 'ne'
+      ? 'मेरो सहकारी ड्यासबोर्ड'
+      : 'My Cooperative Dashboard'
+    : t('openCoopStore', lang);
   const [data, setData] = useState<MarketplacePayload | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [loading, setLoading] = useState(true);
@@ -93,8 +105,8 @@ export function HomePage() {
                 {t('exploreMarketplace', lang)}
                 <ArrowRight className="w-4 h-4" />
               </Button>
-              <Button size="lg" variant="outline" onClick={() => navigate('/register-cooperative')}>
-                {t('openCoopStore', lang)}
+              <Button size="lg" variant="outline" onClick={() => navigate(coopCtaPath)}>
+                {coopCtaLabel}
               </Button>
             </div>
           </div>
@@ -321,9 +333,13 @@ export function HomePage() {
                 : 'Complete cooperative verification via Akash SMS OTP and access our visual store builder, inventory tracking, staff roles, and multi-cooperative checkout.'}
             </p>
             <div className="pt-2">
-              <Button onClick={() => navigate('/register-cooperative')}>
+              <Button onClick={() => navigate(coopCtaPath)}>
                 <Store className="w-4 h-4" />
-                {t('openCoopStore', lang)}
+                {isCoopUser
+                  ? lang === 'ne'
+                    ? 'मेरो पसल व्यवस्थापन गर्नुहोस्'
+                    : 'Manage My Storefront'
+                  : coopCtaLabel}
               </Button>
             </div>
           </div>
@@ -388,9 +404,19 @@ export function HomePage() {
                     variant="outline"
                     size="sm"
                     className="w-full mt-2"
-                    onClick={() => navigate('/register-cooperative')}
+                    onClick={() => navigate(coopCtaPath)}
                   >
-                    {lang === 'ne' ? 'सहकारी दर्ता' : 'Get Started'}
+                    {isCoopUser
+                      ? lang === 'ne'
+                        ? 'ड्यासबोर्ड / सदस्यता'
+                        : 'Manage Plan'
+                      : isSuperAdmin
+                      ? lang === 'ne'
+                        ? 'एडमिन प्यानल'
+                        : 'Manage Plans'
+                      : lang === 'ne'
+                      ? 'सहकारी दर्ता'
+                      : 'Get Started'}
                   </Button>
                 </div>
               </div>

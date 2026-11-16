@@ -7,6 +7,7 @@ import {
   Eye,
   Globe,
   LayoutDashboard,
+  LogOut,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -59,7 +60,7 @@ interface AiUsagePayload {
 }
 
 export function SuperAdminDashboardPage() {
-  const { lang, user, navigate } = useApp();
+  const { lang, user, logout, navigate } = useApp();
   const [tab, setTab] = useState<AdminTab>('overview');
   const [loadingTab, setLoadingTab] = useState(false);
 
@@ -195,11 +196,36 @@ export function SuperAdminDashboardPage() {
           {lang === 'ne' ? 'सुपर एडमिन नियन्त्रण कक्ष' : 'SaaS Super-Admin Control Panel'}
         </h1>
         <p className="text-sm text-[#57534E]">
-          {lang === 'ne'
+          {user
+            ? lang === 'ne'
+              ? `तपाईं हाल ${user.email || user.phone} (${user.role}) बाट लगइन हुनुहुन्छ। यहाँ प्रवेश गर्न सुपर एडमिन खाता आवश्यक छ।`
+              : `Signed in as ${user.email || user.phone} (${user.role}). Super-Admin authorization is required here.`
+            : lang === 'ne'
             ? 'यो क्षेत्रमा प्रवेश गर्न सर्भर-प्रमाणित सुपर एडमिन अधिकार आवश्यक छ।'
             : 'Server-verified Super-Admin authorization is required.'}
         </p>
-        <Button onClick={() => navigate('/login')}>{lang === 'ne' ? 'सुपर एडमिन लगइन' : 'Sign In'}</Button>
+        <div className="flex flex-wrap justify-center gap-3">
+          {!user ? (
+            <Button onClick={() => navigate('/login')}>{lang === 'ne' ? 'सुपर एडमिन लगइन' : 'Sign In'}</Button>
+          ) : (
+            <>
+              <Button
+                onClick={() =>
+                  navigate(
+                    user.role === 'cooperative_admin' || user.role === 'cooperative_staff'
+                      ? '/cooperative'
+                      : '/account'
+                  )
+                }
+              >
+                {lang === 'ne' ? 'मेरो ड्यासबोर्डमा जानुहोस्' : 'Go to My Dashboard'}
+              </Button>
+              <Button variant="outline" onClick={logout}>
+                {lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
     );
   }
@@ -342,6 +368,17 @@ export function SuperAdminDashboardPage() {
             <span className="truncate">
               {lang === 'ne' ? 'डाटा सफाई र मर्मत' : 'Data Cleanup & Maintenance'}
             </span>
+          </button>
+        </div>
+
+        <div className="pt-3 border-t border-[#E5E2DC]">
+          <button
+            type="button"
+            onClick={logout}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-[#57534E] hover:bg-red-50 hover:text-[#B91C1C] transition-colors cursor-pointer"
+          >
+            <LogOut className="w-4 h-4 shrink-0" />
+            <span>{lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}</span>
           </button>
         </div>
       </aside>

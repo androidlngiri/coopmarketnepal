@@ -11,6 +11,7 @@ import {
   FileText,
   HelpCircle,
   LayoutDashboard,
+  LogOut,
   Package,
   Paintbrush,
   Pencil,
@@ -61,7 +62,7 @@ type CoopTab =
   | 'support';
 
 export function CooperativeDashboardPage() {
-  const { lang, user, navigate, refreshSession } = useApp();
+  const { lang, user, logout, navigate, refreshSession } = useApp();
   const [tab, setTab] = useState<CoopTab>('overview');
   const [overview, setOverview] = useState<Record<string, unknown> | null>(null);
   const [otpInput, setOtpInput] = useState('');
@@ -311,15 +312,44 @@ export function CooperativeDashboardPage() {
           {lang === 'ne' ? 'सहकारी विक्रेता ड्यासबोर्ड' : 'Cooperative Seller Dashboard'}
         </h1>
         <p className="text-sm text-[#57534E]">
-          {lang === 'ne'
+          {user
+            ? lang === 'ne'
+              ? `तपाईं हाल ${user.email || user.phone} (${user.role}) बाट लगइन हुनुहुन्छ। केवल सहकारी खाताले मात्र यो ड्यासबोर्ड प्रयोग गर्न सक्छन्।`
+              : `Signed in as ${user.email || user.phone} (${user.role}). Only cooperative accounts may access this workspace.`
+            : lang === 'ne'
             ? 'केवल स्वीकृत वा दर्ता भएका सहकारी खाताले मात्र यो ड्यासबोर्ड प्रयोग गर्न सक्छन्।'
             : 'Only registered cooperative accounts may access this workspace.'}
         </p>
-        <div className="flex justify-center gap-3">
-          <Button onClick={() => navigate('/login')}>{lang === 'ne' ? 'लगइन' : 'Sign In'}</Button>
-          <Button variant="outline" onClick={() => navigate('/register-cooperative')}>
-            {lang === 'ne' ? 'सहकारी दर्ता' : 'Register Cooperative'}
-          </Button>
+        <div className="flex flex-wrap justify-center gap-3">
+          {!user ? (
+            <>
+              <Button onClick={() => navigate('/login')}>{lang === 'ne' ? 'लगइन' : 'Sign In'}</Button>
+              <Button variant="outline" onClick={() => navigate('/register-cooperative')}>
+                {lang === 'ne' ? 'सहकारी दर्ता' : 'Register Cooperative'}
+              </Button>
+            </>
+          ) : user.role === 'super_admin' ? (
+            <>
+              <Button onClick={() => navigate('/super-admin')}>
+                {lang === 'ne' ? 'सुपर एडमिन प्यानलमा जानुहोस्' : 'Go to Super Admin'}
+              </Button>
+              <Button variant="outline" onClick={logout}>
+                {lang === 'ne' ? 'बाहिर निस्कनुहोस्' : 'Sign Out'}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={() => navigate('/register-cooperative')}>
+                {lang === 'ne' ? 'सहकारी पसल दर्ता / अपग्रेड' : 'Upgrade to Cooperative'}
+              </Button>
+              <Button variant="outline" onClick={() => navigate('/account')}>
+                {lang === 'ne' ? 'मेरो खाता' : 'My Account'}
+              </Button>
+              <Button variant="outline" onClick={logout}>
+                {lang === 'ne' ? 'बाहिर निस्कनुहोस्' : 'Sign Out'}
+              </Button>
+            </>
+          )}
         </div>
       </div>
     );
@@ -709,6 +739,17 @@ export function CooperativeDashboardPage() {
             </button>
           ))}
         </nav>
+
+        <div className="pt-3 border-t border-[#E5E2DC]">
+          <button
+            type="button"
+            onClick={logout}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-[#57534E] hover:bg-red-50 hover:text-[#B91C1C] transition-colors cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>{lang === 'ne' ? 'बाहिर निस्कनुहोस् (Sign Out)' : 'Sign Out'}</span>
+          </button>
+        </div>
       </aside>
 
       {/* Main Content Area */}
