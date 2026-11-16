@@ -246,14 +246,24 @@ export function HomePage() {
               className="bg-white border border-[#E5E2DC] rounded-xl overflow-hidden flex flex-col justify-between hover:-translate-y-0.5 transition-transform duration-150 cursor-pointer"
             >
               <div>
-                <div className="aspect-[16/10] bg-[#F3F1EC]">
+                <div className="aspect-[16/10] bg-[#F3F1EC] relative">
                   <SafeImage
                     src={coop.banner_url || coop.logo_url}
                     alt={lang === 'ne' ? coop.store_name_ne : coop.store_name_en}
                     className="w-full h-full object-cover"
                   />
+                  <div className="absolute -bottom-5 left-4 w-12 h-12 rounded-xl border-2 border-white bg-white shadow-sm overflow-hidden">
+                    <SafeImage
+                      src={coop.logo_url}
+                      alt={lang === 'ne' ? coop.store_name_ne : coop.store_name_en}
+                      variant="store"
+                      compact
+                      lang={lang}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
                 </div>
-                <div className="p-4 space-y-2">
+                <div className="p-4 pt-7 space-y-2">
                   <div className="flex items-center gap-1.5 text-xs text-[#78716C]">
                     <MapPin className="w-3.5 h-3.5 shrink-0" />
                     <span>

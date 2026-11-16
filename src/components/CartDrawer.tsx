@@ -122,6 +122,9 @@ export function CartDrawer() {
                             <SafeImage
                               src={item.imageUrl}
                               alt={lang === 'ne' ? item.nameNe : item.nameEn}
+                              variant="product"
+                              compact
+                              lang={lang}
                               className="w-16 h-16 rounded-lg border border-[#E5E2DC]"
                             />
                           </button>

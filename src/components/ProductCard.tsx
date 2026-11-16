@@ -97,6 +97,8 @@ export function ProductCard({ product }: { product: ProductRecord }) {
           src={product.image_url}
           alt={title}
           fallbackLabel={title}
+          variant="product"
+          lang={lang}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
         />
         {avail === 'preorder' && canBuy && (

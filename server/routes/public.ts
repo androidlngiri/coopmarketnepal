@@ -3,6 +3,16 @@ import { parseJsonField, requireSupabaseAdmin } from '../supabase-admin.ts';
 
 export const publicRouter = Router();
 
+const DEFAULT_HERO_PLACEHOLDER = '/images/hero-nepal-cooperative.jpg';
+
+function resolveStoreLogo(storeLogo: unknown, coopLogo: unknown): string | null {
+  const s = typeof storeLogo === 'string' ? storeLogo.trim() : '';
+  const c = typeof coopLogo === 'string' ? coopLogo.trim() : '';
+  if (s && s !== DEFAULT_HERO_PLACEHOLDER) return s;
+  if (c && c !== DEFAULT_HERO_PLACEHOLDER) return c;
+  return s || c || null;
+}
+
 function pickPrimaryImage(images: Array<{ image_url: string; is_primary?: boolean; sort_order?: number }> | null | undefined): string | null {
   if (!images || images.length === 0) return null;
   const sorted = [...images].sort((a, b) => {
@@ -56,7 +66,7 @@ publicRouter.get('/marketplace', async (_req, res) => {
         .from('cooperatives')
         .select(
           `id, slug, name_ne, name_en, cooperative_type, province, district, municipality, logo_url, is_featured, created_at,
-           stores!inner (store_name_ne, store_name_en, tagline_ne, tagline_en, banner_url, primary_color, is_published),
+           stores!inner (store_name_ne, store_name_en, tagline_ne, tagline_en, logo_url, banner_url, primary_color, is_published),
            products (id, status, is_prohibited)`
         )
         .eq('status', 'approved')
@@ -71,7 +81,7 @@ publicRouter.get('/marketplace', async (_req, res) => {
           `*,
            product_images (image_url, is_primary, sort_order),
            global_categories (name_ne, name_en, slug),
-           cooperatives!inner (id, slug, name_ne, name_en, district, status, deleted_at, stores!inner (store_name_ne, store_name_en, is_published))`
+           cooperatives!inner (id, slug, name_ne, name_en, district, status, deleted_at, stores!inner (store_name_ne, store_name_en, logo_url, is_published))`
         )
         .eq('status', 'published')
         .is('deleted_at', null)
@@ -99,7 +109,7 @@ publicRouter.get('/marketplace', async (_req, res) => {
         province: c.province,
         district: c.district,
         municipality: c.municipality,
-        logo_url: c.logo_url,
+        logo_url: resolveStoreLogo(store?.logo_url, c.logo_url),
         is_featured: c.is_featured,
         store_name_ne: store?.store_name_ne,
         store_name_en: store?.store_name_en,
@@ -162,7 +172,7 @@ publicRouter.get('/cooperatives', async (req, res) => {
       .select(
         `id, slug, name_ne, name_en, cooperative_type, province, district, municipality, ward_number,
          logo_url, is_featured, registration_number, approved_at,
-         stores!inner (store_name_ne, store_name_en, tagline_ne, tagline_en, banner_url, primary_color, is_published),
+         stores!inner (store_name_ne, store_name_en, tagline_ne, tagline_en, logo_url, banner_url, primary_color, is_published),
          products (id, status, is_prohibited)`
       )
       .eq('status', 'approved')
@@ -193,7 +203,7 @@ publicRouter.get('/cooperatives', async (req, res) => {
           district: c.district,
           municipality: c.municipality,
           ward_number: c.ward_number,
-          logo_url: c.logo_url,
+          logo_url: resolveStoreLogo(store?.logo_url, c.logo_url),
           is_featured: c.is_featured,
           registration_number: c.registration_number,
           approved_at: c.approved_at,
@@ -288,6 +298,8 @@ publicRouter.get('/stores/:slug', async (req, res) => {
       store_name_en: activeStore.store_name_en,
     }));
 
+    const resolvedLogo = resolveStoreLogo(activeStore.logo_url, coop.logo_url);
+
     res.json({
       cooperative: {
         id: coop.id,
@@ -305,10 +317,12 @@ publicRouter.get('/stores/:slug', async (req, res) => {
         tole_address: coop.tole_address,
         contact_phone: coop.contact_phone,
         contact_email: coop.contact_email,
+        logo_url: resolvedLogo,
         status: coop.status,
       },
       store: {
         ...activeStore,
+        logo_url: resolvedLogo,
         sections: parseJsonField(activeStore.sections ?? activeStore.sections_json, []),
         socialLinks: parseJsonField(activeStore.socialLinks ?? activeStore.social_links_json, {}),
       },

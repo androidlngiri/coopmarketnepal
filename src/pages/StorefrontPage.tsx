@@ -23,6 +23,7 @@ interface StorePayload {
     tole_address: string;
     contact_phone: string;
     contact_email: string;
+    logo_url?: string | null;
   };
   store: {
     store_name_ne: string;
@@ -136,9 +137,12 @@ export function StorefrontPage({ slug }: { slug: string }) {
               <div className="lg:col-span-6 p-6 sm:p-10 flex flex-col justify-center space-y-4">
                 <div className="flex items-center gap-3">
                   <SafeImage
-                    src={store.logo_url}
+                    src={store.logo_url || cooperative.logo_url}
                     alt={lang === 'ne' ? store.store_name_ne : store.store_name_en}
-                    className="w-12 h-12 rounded-lg border border-[#E5E2DC]"
+                    variant="store"
+                    compact
+                    lang={lang}
+                    className="w-16 h-16 rounded-xl border border-[#E5E2DC] bg-white shrink-0"
                   />
                   <div>
                     <p className="text-xs text-[#57534E]">{lang === 'ne' ? cooperative.name_ne : cooperative.name_en}</p>

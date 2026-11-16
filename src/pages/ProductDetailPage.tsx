@@ -236,7 +236,14 @@ export function ProductDetailPage({ slug }: { slug: string }) {
         {/* Gallery Left */}
         <div className="lg:col-span-7 space-y-3">
           <div className="aspect-[4/3] rounded-xl overflow-hidden border border-[#E5E2DC] bg-white">
-            <SafeImage src={activeImage} alt={title} className="w-full h-full object-cover" />
+            <SafeImage
+              src={activeImage}
+              alt={title}
+              fallbackLabel={title}
+              variant="product"
+              lang={lang}
+              className="w-full h-full object-cover"
+            />
           </div>
           {images.length > 1 && (
             <div className="flex gap-3 overflow-x-auto pb-1">
@@ -249,7 +256,14 @@ export function ProductDetailPage({ slug }: { slug: string }) {
                     activeImage === img.image_url ? 'border-[#B91C1C] ring-1 ring-[#B91C1C]' : 'border-[#E5E2DC]'
                   }`}
                 >
-                  <SafeImage src={img.image_url} alt={img.alt_text || title} className="w-full h-full object-cover" />
+                  <SafeImage
+                    src={img.image_url}
+                    alt={img.alt_text || title}
+                    variant="product"
+                    compact
+                    lang={lang}
+                    className="w-full h-full object-cover"
+                  />
                 </button>
               ))}
             </div>

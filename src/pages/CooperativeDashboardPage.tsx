@@ -25,10 +25,13 @@ import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { formatDateBS, formatNPR, toNepaliDigits } from '../lib/bs-date';
 import { labelFor, STATUS_LABELS } from '../lib/i18n';
+import { optimizeImageFileToDataUrl } from '../lib/image-upload';
 import { Input, Select, Textarea } from '../components/ui/input';
 import { NepaliInput, NepaliTextarea } from '../components/ui/nepali-input';
 import { Button } from '../components/ui/button';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
+import { SafeImage } from '../components/SafeImage';
+import { ProductImageUploadField } from '../components/coop/ProductImageUploadField';
 import {
   AiProductAssistantPanel,
   type AiGeneratedPayload,
@@ -125,6 +128,7 @@ export function CooperativeDashboardPage() {
     isFeatured: boolean;
     descriptionNe: string;
     descriptionEn: string;
+    existingImageUrl: string;
     imageBase64: string;
     aiAssisted: boolean;
     aiGenerationId: string;
@@ -215,6 +219,25 @@ export function CooperativeDashboardPage() {
     }
   }, [user]);
 
+  const hydrateStoreBuilderForm = (storeData: Record<string, unknown>) => {
+    const draft = storeData.draftConfig as Record<string, unknown> | null;
+    if (draft && typeof draft === 'object') {
+      return {
+        ...storeData,
+        ...draft,
+        liveSnapshot: storeData,
+        draftConfig: draft,
+        logoBase64: '',
+        bannerBase64: '',
+      };
+    }
+    return {
+      ...storeData,
+      logoBase64: '',
+      bannerBase64: '',
+    };
+  };
+
   useEffect(() => {
     if (!user || !['cooperative_admin', 'cooperative_staff'].includes(user.role)) return;
     if (tab === 'store_builder') {
@@ -222,7 +245,7 @@ export function CooperativeDashboardPage() {
         (r) => {
           if (r.ok) {
             setStoreSlug(r.data.cooperative.slug);
-            setStoreForm(r.data.store);
+            setStoreForm(hydrateStoreBuilderForm(r.data.store));
           }
         }
       );
@@ -303,6 +326,7 @@ export function CooperativeDashboardPage() {
   }
 
   const coop = overview?.cooperative as Record<string, unknown> | undefined;
+  const coopStore = overview?.store as Record<string, unknown> | undefined;
   const sub = overview?.subscription as Record<string, unknown> | undefined;
   const metrics = overview?.metrics as Record<string, number> | undefined;
   const productStats = overview?.productStats as Record<string, number> | undefined;
@@ -350,7 +374,10 @@ export function CooperativeDashboardPage() {
     const r = await apiFetch<{ cooperative: { slug: string }; store: Record<string, unknown> }>('/api/coop-dashboard/store');
     if (r.ok) {
       setStoreSlug(r.data.cooperative.slug);
-      setStoreForm(r.data.store);
+      setStoreForm(hydrateStoreBuilderForm(r.data.store));
+    }
+    if (publish) {
+      loadOverview();
     }
   };
 
@@ -596,6 +623,7 @@ export function CooperativeDashboardPage() {
       isFeatured: Boolean(p.is_featured),
       descriptionNe: String(p.description_ne || ''),
       descriptionEn: String(p.description_en || ''),
+      existingImageUrl: String(p.image_url || ''),
       imageBase64: '',
       aiAssisted: Boolean(p.ai_assisted),
       aiGenerationId: '',
@@ -644,14 +672,26 @@ export function CooperativeDashboardPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* Left Sidebar (240px desktop feel) */}
       <aside className="lg:col-span-3 bg-white border border-[#E5E2DC] rounded-xl p-4 space-y-4">
-        <div className="pb-3 border-b border-[#E5E2DC]">
-          <p className="text-xs text-[#78716C]">{lang === 'ne' ? 'सहकारी पसल' : 'Cooperative Tenant'}</p>
-          <p className="font-semibold text-sm text-[#0F172A] truncate">
-            {coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : '...'}
-          </p>
-          <p className="text-xs mt-1 font-medium text-[#15803D]">
-            {coop ? labelFor(STATUS_LABELS, String(coop.status), lang) : ''}
-          </p>
+        <div className="pb-3 border-b border-[#E5E2DC] flex items-center gap-3">
+          <div className="w-11 h-11 rounded-lg border border-[#E5E2DC] bg-white overflow-hidden shrink-0">
+            <SafeImage
+              src={String(coopStore?.logo_url || coop?.logo_url || '')}
+              alt={coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : 'Store Logo'}
+              variant="store"
+              compact
+              lang={lang}
+              className="w-full h-full object-cover"
+            />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[11px] text-[#78716C]">{lang === 'ne' ? 'सहकारी पसल' : 'Cooperative Tenant'}</p>
+            <p className="font-semibold text-sm text-[#0F172A] truncate">
+              {coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : '...'}
+            </p>
+            <p className="text-xs mt-0.5 font-medium text-[#15803D]">
+              {coop ? labelFor(STATUS_LABELS, String(coop.status), lang) : ''}
+            </p>
+          </div>
         </div>
 
         <nav className="space-y-1">
@@ -912,21 +952,29 @@ export function CooperativeDashboardPage() {
               <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950">
                 <span>
                   {lang === 'ne'
-                    ? 'अप्रकाशित स्टोर मस्यौदा उपलब्ध छ।'
-                    : 'An unpublished store draft is saved.'}
+                    ? 'अप्रकाशित स्टोर मस्यौदा हाल सम्पादनमा लोड गरिएको छ। पसलमा देखाउन "पसल प्रकाशित गर्नुहोस्" थिच्नुहोस्।'
+                    : 'Your saved unpublished draft is loaded in the editor. Click "Publish Store" to make it live.'}
                 </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const draft = storeForm.draftConfig as Record<string, unknown>;
-                    setStoreForm({ ...storeForm, ...draft });
-                    toast.success(lang === 'ne' ? 'मस्यौदा लोड भयो।' : 'Draft loaded into editor.');
-                  }}
-                >
-                  {lang === 'ne' ? 'मस्यौदा लोड गर्नुहोस्' : 'Load Draft'}
-                </Button>
+                {Boolean(storeForm.liveSnapshot) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const live = storeForm.liveSnapshot as Record<string, unknown>;
+                      setStoreForm({
+                        ...live,
+                        draftConfig: storeForm.draftConfig,
+                        liveSnapshot: live,
+                        logoBase64: '',
+                        bannerBase64: '',
+                      });
+                      toast.success(lang === 'ne' ? 'हालको प्रकाशित विवरण लोड भयो।' : 'Live store values loaded.');
+                    }}
+                  >
+                    {lang === 'ne' ? 'लाइभ संस्करण लोड' : 'Load Live Version'}
+                  </Button>
+                )}
               </div>
             )}
 
@@ -1018,41 +1066,118 @@ export function CooperativeDashboardPage() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium mb-1">{lang === 'ne' ? 'पसल लोगो अपलोड' : 'Upload Store Logo'}</label>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = () => setStoreForm({ ...storeForm, logoBase64: String(reader.result || '') });
-                    reader.readAsDataURL(file);
-                  }}
-                  className="text-xs text-[#57534E]"
-                />
-                {Boolean(storeForm.logoBase64) && (
-                  <p className="text-[11px] text-[#15803D] mt-1">{lang === 'ne' ? 'नयाँ लोगो चयन भयो' : 'New logo selected'}</p>
-                )}
+              <div className="p-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-[#0F172A]">
+                    {lang === 'ne' ? 'पसलको लोगो (Store Logo)' : 'Store Logo'}
+                  </label>
+                  {Boolean(storeForm.logoBase64) && (
+                    <span className="text-[11px] font-medium text-[#15803D]">
+                      {lang === 'ne' ? 'नयाँ लोगो चयन भयो — प्रकाशित गर्न तयार' : 'New logo ready to publish'}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="w-20 h-20 rounded-xl border border-[#E5E2DC] bg-white overflow-hidden shrink-0">
+                    {storeForm.logoBase64 ? (
+                      <img
+                        src={String(storeForm.logoBase64)}
+                        alt="New store logo preview"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <SafeImage
+                        src={String(storeForm.logo_url || '')}
+                        alt="Current store logo"
+                        variant="store"
+                        compact
+                        lang={lang}
+                        className="w-full h-full object-cover"
+                      />
+                    )}
+                  </div>
+                  <div className="space-y-2 min-w-0 flex-1">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const dataUrl = await optimizeImageFileToDataUrl(file, {
+                            maxWidth: 720,
+                            maxHeight: 720,
+                            quality: 0.88,
+                            preservePng: true,
+                          });
+                          setStoreForm((prev) => (prev ? { ...prev, logoBase64: dataUrl } : prev));
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : 'लोगो लोड असफल।');
+                        }
+                      }}
+                      className="block w-full text-xs text-[#57534E] file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-[#E5E2DC] file:text-xs file:font-medium file:bg-white file:text-[#0F172A] hover:file:bg-[#F3F1EC] cursor-pointer"
+                    />
+                    <p className="text-[11px] text-[#78716C]">
+                      {lang === 'ne'
+                        ? 'अपलोड पछि "मस्यौदा सुरक्षित" वा "पसल प्रकाशित गर्नुहोस्" थिच्नुहोस्।'
+                        : 'Click "Save Draft" or "Publish Store" to save the updated logo.'}
+                    </p>
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">{lang === 'ne' ? 'ब्यानर फोटो अपलोड' : 'Upload Store Banner'}</label>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = () => setStoreForm({ ...storeForm, bannerBase64: String(reader.result || '') });
-                    reader.readAsDataURL(file);
-                  }}
-                  className="text-xs text-[#57534E]"
-                />
-                {Boolean(storeForm.bannerBase64) && (
-                  <p className="text-[11px] text-[#15803D] mt-1">{lang === 'ne' ? 'नयाँ ब्यानर चयन भयो' : 'New banner selected'}</p>
-                )}
+
+              <div className="p-4 rounded-xl border border-[#E5E2DC] bg-[#FAF9F6] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-[#0F172A]">
+                    {lang === 'ne' ? 'पसलको ब्यानर (Store Banner)' : 'Store Banner'}
+                  </label>
+                  {Boolean(storeForm.bannerBase64) && (
+                    <span className="text-[11px] font-medium text-[#15803D]">
+                      {lang === 'ne' ? 'नयाँ ब्यानर चयन भयो — प्रकाशित गर्न तयार' : 'New banner ready to publish'}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="w-28 h-20 rounded-xl border border-[#E5E2DC] bg-white overflow-hidden shrink-0">
+                    {storeForm.bannerBase64 ? (
+                      <img
+                        src={String(storeForm.bannerBase64)}
+                        alt="New store banner preview"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <SafeImage
+                        src={String(storeForm.banner_url || '')}
+                        alt="Current store banner"
+                        className="w-full h-full object-cover"
+                      />
+                    )}
+                  </div>
+                  <div className="space-y-2 min-w-0 flex-1">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const dataUrl = await optimizeImageFileToDataUrl(file, {
+                            maxWidth: 1600,
+                            maxHeight: 900,
+                            quality: 0.85,
+                          });
+                          setStoreForm((prev) => (prev ? { ...prev, bannerBase64: dataUrl } : prev));
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : 'ब्यानर लोड असफल।');
+                        }
+                      }}
+                      className="block w-full text-xs text-[#57534E] file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-[#E5E2DC] file:text-xs file:font-medium file:bg-white file:text-[#0F172A] hover:file:bg-[#F3F1EC] cursor-pointer"
+                    />
+                    <p className="text-[11px] text-[#78716C]">
+                      {lang === 'ne' ? 'चौडा ब्यानर फोटो (१६:९ अनुपात उपयुक्त)' : 'Wide banner photo (16:9 recommended)'}
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1334,19 +1459,16 @@ export function CooperativeDashboardPage() {
                 </label>
               )}
 
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = () => setNewProd({ ...newProd, imageBase64: String(reader.result || '') });
-                    reader.readAsDataURL(file);
-                  }}
-                  className="text-xs text-[#57534E]"
-                />
+              <ProductImageUploadField
+                lang={lang}
+                previewUrl={newProd.imageBase64 || null}
+                isNewSelection={Boolean(newProd.imageBase64)}
+                productName={newProd.nameNe || newProd.nameEn}
+                onImageSelect={(dataUrl) => setNewProd((prev) => ({ ...prev, imageBase64: dataUrl }))}
+                onClearNewImage={() => setNewProd((prev) => ({ ...prev, imageBase64: '' }))}
+              />
+
+              <div className="flex justify-end">
                 <Button type="submit" disabled={savingProduct}>
                   {savingProduct
                     ? lang === 'ne'
@@ -1612,35 +1734,32 @@ export function CooperativeDashboardPage() {
                   </label>
                 )}
 
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-xs text-[#57534E]">
-                    <span>{lang === 'ne' ? 'नयाँ फोटो (ऐच्छिक):' : 'Replace Photo (Optional):'}</span>
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file || !editingProd) return;
-                        const reader = new FileReader();
-                        reader.onload = () => setEditingProd({ ...editingProd, imageBase64: String(reader.result || '') });
-                        reader.readAsDataURL(file);
-                      }}
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <Button type="button" variant="outline" onClick={() => setEditingProd(null)}>
-                      {lang === 'ne' ? 'रद्द' : 'Cancel'}
-                    </Button>
-                    <Button type="submit" disabled={savingProduct}>
-                      {savingProduct
-                        ? lang === 'ne'
-                          ? 'सुरक्षित हुँदै...'
-                          : 'Saving...'
-                        : lang === 'ne'
-                        ? 'परिवर्तन सुरक्षित गर्नुहोस्'
-                        : 'Save Changes'}
-                    </Button>
-                  </div>
+                <ProductImageUploadField
+                  lang={lang}
+                  previewUrl={editingProd.imageBase64 || editingProd.existingImageUrl || null}
+                  isNewSelection={Boolean(editingProd.imageBase64)}
+                  productName={editingProd.nameNe || editingProd.nameEn}
+                  onImageSelect={(dataUrl) =>
+                    setEditingProd((prev) => (prev ? { ...prev, imageBase64: dataUrl } : prev))
+                  }
+                  onClearNewImage={() =>
+                    setEditingProd((prev) => (prev ? { ...prev, imageBase64: '' } : prev))
+                  }
+                />
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" onClick={() => setEditingProd(null)}>
+                    {lang === 'ne' ? 'रद्द' : 'Cancel'}
+                  </Button>
+                  <Button type="submit" disabled={savingProduct}>
+                    {savingProduct
+                      ? lang === 'ne'
+                        ? 'सुरक्षित हुँदैछ...'
+                        : 'Saving...'
+                      : lang === 'ne'
+                      ? 'परिवर्तन सुरक्षित गर्नुहोस्'
+                      : 'Save Changes'}
+                  </Button>
                 </div>
               </form>
             )}
@@ -1696,11 +1815,28 @@ export function CooperativeDashboardPage() {
                       .map((p) => (
                         <tr key={String(p.id)}>
                           <td className="p-3 font-medium text-[#0F172A]">
-                            <p>{lang === 'ne' ? String(p.name_ne) : String(p.name_en)}</p>
-                            <p className="text-xs text-[#78716C]">
-                              {lang === 'ne' ? String(p.unit_label_ne || '') : String(p.unit_label_en || '')}
-                              {Boolean(p.ai_assisted) && ' · AI'}
-                            </p>
+                            <div className="flex items-center gap-3">
+                              <SafeImage
+                                src={String(p.image_url || '')}
+                                alt={lang === 'ne' ? String(p.name_ne) : String(p.name_en)}
+                                variant="product"
+                                compact
+                                lang={lang}
+                                className="w-10 h-10 rounded-lg border border-[#E5E2DC] shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate">{lang === 'ne' ? String(p.name_ne) : String(p.name_en)}</p>
+                                <p className="text-xs text-[#78716C]">
+                                  {lang === 'ne' ? String(p.unit_label_ne || '') : String(p.unit_label_en || '')}
+                                  {Boolean(p.ai_assisted) && ' · AI'}
+                                  {!p.image_url && (
+                                    <span className="ml-1.5 text-[#B91C1C] font-medium">
+                                      · {lang === 'ne' ? 'फोटो अपलोड बाँकी' : 'No photo uploaded'}
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+                            </div>
                           </td>
                           <td className="p-3 font-mono text-xs text-[#57534E]">{String(p.sku)}</td>
                           <td className="p-3 text-right tabular-nums">

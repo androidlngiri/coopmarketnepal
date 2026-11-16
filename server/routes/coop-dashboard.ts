@@ -100,7 +100,7 @@ coopDashboardRouter.get('/overview', requireCooperativeAccess(), async (req, res
   const coopId = req.cooperativeId!;
   const sb = requireSupabaseAdmin();
 
-  const [{ coop, sub }, metricsRes, lowStockRes, recentOrdersRes] = await Promise.all([
+  const [{ coop, sub }, metricsRes, lowStockRes, recentOrdersRes, storeRes] = await Promise.all([
     getCoopAndSub(coopId),
     sb.rpc('get_coop_overview_metrics', { p_cooperative_id: coopId }),
     sb
@@ -115,6 +115,11 @@ coopDashboardRouter.get('/overview', requireCooperativeAccess(), async (req, res
       .eq('cooperative_id', coopId)
       .order('created_at', { ascending: false })
       .limit(8),
+    sb
+      .from('stores')
+      .select('logo_url, banner_url, store_name_ne, store_name_en, is_published')
+      .eq('cooperative_id', coopId)
+      .maybeSingle(),
   ]);
 
   const m = (metricsRes.data || {}) as Record<string, unknown>;
@@ -124,6 +129,7 @@ coopDashboardRouter.get('/overview', requireCooperativeAccess(), async (req, res
 
   res.json({
     cooperative: coop,
+    store: storeRes.data || null,
     subscription: sub,
     metrics: m.metrics || {
       total_sales: 0,
@@ -167,11 +173,25 @@ coopDashboardRouter.get('/store', requireCooperativeAccess(), async (req, res) =
 coopDashboardRouter.put('/store', requireCooperativeAccess('manage_store'), async (req, res) => {
   const coopId = req.cooperativeId!;
   const sb = requireSupabaseAdmin();
-  const { coop } = await getCoopAndSub(coopId);
+  const [{ coop }, existingStoreRes] = await Promise.all([
+    getCoopAndSub(coopId),
+    sb.from('stores').select('logo_url, banner_url, draft_config_json').eq('cooperative_id', coopId).maybeSingle(),
+  ]);
+  const existingStore = existingStoreRes.data as Record<string, unknown> | null;
+  const existingDraft = parseJsonField<Record<string, unknown> | null>(existingStore?.draft_config_json, null);
   const body = req.body || {};
 
-  let logoUrl = body.logo_url;
-  let bannerUrl = body.banner_url;
+  let logoUrl =
+    (typeof body.logo_url === 'string' && body.logo_url.trim()) ||
+    (typeof existingDraft?.logo_url === 'string' && existingDraft.logo_url.trim()) ||
+    (typeof existingStore?.logo_url === 'string' && existingStore.logo_url.trim()) ||
+    (typeof coop?.logo_url === 'string' && coop.logo_url.trim()) ||
+    '';
+  let bannerUrl =
+    (typeof body.banner_url === 'string' && body.banner_url.trim()) ||
+    (typeof existingDraft?.banner_url === 'string' && existingDraft.banner_url.trim()) ||
+    (typeof existingStore?.banner_url === 'string' && existingStore.banner_url.trim()) ||
+    '';
   try {
     if (body.logoBase64 && String(body.logoBase64).startsWith('data:')) {
       logoUrl = (
@@ -257,6 +277,10 @@ coopDashboardRouter.put('/store', requireCooperativeAccess('manage_store'), asyn
       })
       .eq('cooperative_id', coopId);
     if (error) return res.status(400).json({ error: error.message });
+
+    if (updatePayload.logo_url && updatePayload.logo_url !== '/images/hero-nepal-cooperative.jpg') {
+      await sb.from('cooperatives').update({ logo_url: updatePayload.logo_url }).eq('id', coopId);
+    }
   } else {
     const { error } = await sb
       .from('stores')
@@ -281,7 +305,12 @@ coopDashboardRouter.put('/store', requireCooperativeAccess('manage_store'), asyn
     ipAddress: req.ip,
   });
 
-  res.json({ ok: true, published: publishRequested });
+  res.json({
+    ok: true,
+    published: publishRequested,
+    logo_url: updatePayload.logo_url,
+    banner_url: updatePayload.banner_url,
+  });
 });
 
 // 3. Cooperative Categories
