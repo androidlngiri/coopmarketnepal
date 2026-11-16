@@ -120,7 +120,7 @@ export function createExpressApp() {
         canonicalUrl = `${baseUrl}/store/${encodeURIComponent(slug)}`;
         const { data: coop } = await sb
           .from('cooperatives')
-          .select('name_ne, name_en, district, province, status, deleted_at, stores!inner(store_name_ne, store_name_en, tagline_ne, description_ne, banner_url, logo_url, is_published)')
+          .select('name_ne, name_en, district, province, logo_url, status, deleted_at, stores!inner(store_name_ne, store_name_en, tagline_ne, tagline_en, banner_url, logo_url, is_published)')
           .eq('slug', slug)
           .eq('status', 'approved')
           .is('deleted_at', null)
@@ -132,16 +132,20 @@ export function createExpressApp() {
           title = `${storeName} — सहकारी बजार नेपाल`;
           const rawDesc =
             store.tagline_ne ||
-            store.description_ne ||
+            store.tagline_en ||
             `${coop.name_ne} (${coop.district}, ${coop.province}) का प्रमाणित स्थानीय तथा अर्गानिक उत्पादनहरू सिधै खरिद गर्नुहोस्।`;
           description = String(rawDesc).slice(0, 160);
-          imageUrl = resolveOgImageUrl(store.banner_url || store.logo_url, baseUrl);
+          const candidateImg =
+            (store.banner_url && store.banner_url !== '/images/hero-nepal-cooperative.jpg' ? store.banner_url : null) ||
+            (store.logo_url && store.logo_url !== '/images/hero-nepal-cooperative.jpg' ? store.logo_url : null) ||
+            (coop.logo_url && coop.logo_url !== '/images/hero-nepal-cooperative.jpg' ? coop.logo_url : null);
+          imageUrl = resolveOgImageUrl(candidateImg, baseUrl);
         }
       } else if (type === 'product') {
         canonicalUrl = `${baseUrl}/product/${encodeURIComponent(slug)}`;
         const { data: prod } = await sb
           .from('products')
-          .select('name_ne, name_en, short_desc_ne, price_npr, discount_price_npr, unit_label_ne, status, deleted_at, is_prohibited, product_images(image_url, is_primary), cooperatives!inner(name_ne, status, deleted_at, stores!inner(store_name_ne, is_published))')
+          .select('name_ne, name_en, short_description_ne, description_ne, price_npr, discount_price_npr, unit_label_ne, status, deleted_at, is_prohibited, product_images(image_url, is_primary, sort_order), cooperatives!inner(name_ne, status, deleted_at, stores!inner(store_name_ne, is_published))')
           .eq('slug', slug)
           .eq('status', 'published')
           .is('deleted_at', null)
@@ -154,10 +158,10 @@ export function createExpressApp() {
           const activePrice = prod.discount_price_npr && Number(prod.discount_price_npr) > 0 ? prod.discount_price_npr : prod.price_npr;
           const storeName = String(store.store_name_ne || coop.name_ne || 'सहकारी बजार नेपाल');
           title = `${prod.name_ne} (रु. ${activePrice}/${prod.unit_label_ne}) — ${storeName}`;
-          description = String(prod.short_desc_ne || `${storeName} बाट प्रमाणित ${prod.name_ne} सिधै अर्डर गर्नुहोस्।`).slice(0, 160);
-          const imgs = (prod.product_images as Array<{ image_url: string; is_primary?: boolean }>) || [];
-          const primaryImg = imgs.find((i) => i.is_primary)?.image_url || imgs[0]?.image_url;
-          imageUrl = resolveOgImageUrl(primaryImg, baseUrl);
+          description = String(prod.short_description_ne || prod.description_ne || `${storeName} बाट प्रमाणित ${prod.name_ne} सिधै अर्डर गर्नुहोस्।`).slice(0, 160);
+          const imgs = (prod.product_images as Array<{ image_url: string; is_primary?: boolean; sort_order?: number }>) || [];
+          const sortedImgs = [...imgs].sort((a, b) => (Boolean(b.is_primary) ? 1 : 0) - (Boolean(a.is_primary) ? 1 : 0));
+          imageUrl = resolveOgImageUrl(sortedImgs[0]?.image_url, baseUrl);
           ogType = 'product';
         }
       }
