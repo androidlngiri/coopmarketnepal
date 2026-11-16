@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, Info, LogIn, ShieldCheck, Store, Upload } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
-import { NEPAL_PROVINCES } from '../lib/bs-date';
+import { adStringToBsString, bsStringToAdString, formatDateBS, NEPAL_PROVINCES, parseBsDateInput } from '../lib/bs-date';
 import { COOP_TYPES } from '../lib/i18n';
 import { Input, Select } from '../components/ui/input';
+import { NepaliInput } from '../components/ui/nepali-input';
 import { Button } from '../components/ui/button';
 import { toast } from 'sonner';
 
@@ -273,15 +274,21 @@ export function RegisterCooperativePage() {
       <form onSubmit={handleSubmit} className="bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-6">
         {step === 1 && (
           <div className="space-y-4">
+            <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] px-3 py-2 text-xs text-[#57534E]">
+              {lang === 'ne'
+                ? 'सुझाव: नेपाली लेख्ने बक्सहरूमा किबोर्ड भाषा नबदली सिधै अंग्रेजीमा लेख्नुहोस् (जस्तै: sahakari + Space) — स्वतः नेपाली बन्नेछ।'
+                : 'Tip: In Nepali fields, type phonetically in English (e.g. "sahakari" + Space) — it auto-converts to Nepali without changing your OS keyboard.'}
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'सहकारीको आधिकारिक नाम (नेपाली) *' : 'Official Name (Nepali) *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={true}
                   value={form.nameNe}
-                  onChange={(e) => setForm({ ...form, nameNe: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, nameNe: val }))}
                   placeholder="जस्तै: सगरमाथा कृषि सहकारी संस्था लि."
                 />
               </div>
@@ -314,10 +321,11 @@ export function RegisterCooperativePage() {
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'दर्ता गर्ने निकाय (Authority) *' : 'Registration Authority *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={lang === 'ne'}
                   value={form.registrationAuthority}
-                  onChange={(e) => setForm({ ...form, registrationAuthority: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, registrationAuthority: val }))}
                   placeholder="डिभिजन सहकारी कार्यालय / नगरपालिका"
                 />
               </div>
@@ -332,18 +340,43 @@ export function RegisterCooperativePage() {
                   type="date"
                   required
                   value={form.registrationDateAd}
-                  onChange={(e) => setForm({ ...form, registrationDateAd: e.target.value })}
+                  onChange={(e) => {
+                    const nextAd = e.target.value;
+                    const nextBs = adStringToBsString(nextAd, true);
+                    setForm((prev) => ({
+                      ...prev,
+                      registrationDateAd: nextAd,
+                      ...(nextBs ? { registrationDateBs: nextBs } : {}),
+                    }));
+                  }}
                 />
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5">
-                  {lang === 'ne' ? 'दर्ता मिति (बि.सं.)' : 'Registration Date (BS)'}
+                  {lang === 'ne' ? 'दर्ता मिति (बि.सं.) — स्वतः रूपान्तरण' : 'Registration Date (BS) — Auto Sync'}
                 </label>
                 <Input
                   value={form.registrationDateBs}
-                  onChange={(e) => setForm({ ...form, registrationDateBs: e.target.value })}
-                  placeholder="२०७९-०२-०१"
+                  onChange={(e) => {
+                    const nextBs = e.target.value;
+                    const nextAd = bsStringToAdString(nextBs);
+                    setForm((prev) => ({
+                      ...prev,
+                      registrationDateBs: nextBs,
+                      ...(nextAd ? { registrationDateAd: nextAd } : {}),
+                    }));
+                  }}
+                  placeholder="२०७९-०२-०१ वा 2079-02-01"
                 />
+                <p className="text-[11px] text-[#57534E] mt-1">
+                  {parseBsDateInput(form.registrationDateBs)
+                    ? form.registrationDateAd
+                      ? formatDateBS(form.registrationDateAd, lang)
+                      : ''
+                    : lang === 'ne'
+                    ? 'ढाँचा: YYYY-MM-DD (जस्तै: 2079-02-01)'
+                    : 'Format: YYYY-MM-DD (e.g. 2079-02-01)'}
+                </p>
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5">
@@ -418,10 +451,11 @@ export function RegisterCooperativePage() {
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'नगरपालिका / गाउँपालिका *' : 'Municipality *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={lang === 'ne'}
                   value={form.municipality}
-                  onChange={(e) => setForm({ ...form, municipality: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, municipality: val }))}
                 />
               </div>
               <div>
@@ -438,10 +472,11 @@ export function RegisterCooperativePage() {
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'टोल / सडक ठेगाना *' : 'Tole / Street *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={lang === 'ne'}
                   value={form.toleAddress}
-                  onChange={(e) => setForm({ ...form, toleAddress: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, toleAddress: val }))}
                 />
               </div>
             </div>
@@ -451,20 +486,22 @@ export function RegisterCooperativePage() {
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'अधिकृत प्रतिनिधिको नाम *' : 'Authorized Representative *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={lang === 'ne'}
                   value={form.authorizedRepName}
-                  onChange={(e) => setForm({ ...form, authorizedRepName: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, authorizedRepName: val }))}
                 />
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'पद (Designation) *' : 'Designation *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={lang === 'ne'}
                   value={form.authorizedRepDesignation}
-                  onChange={(e) => setForm({ ...form, authorizedRepDesignation: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, authorizedRepDesignation: val }))}
                   placeholder="अध्यक्ष / व्यवस्थापक"
                 />
               </div>
@@ -522,10 +559,11 @@ export function RegisterCooperativePage() {
                 <label className="block text-xs font-medium mb-1.5">
                   {lang === 'ne' ? 'प्रस्तावित पसलको नाम *' : 'Requested Store Name *'}
                 </label>
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={lang === 'ne'}
                   value={form.requestedStoreName}
-                  onChange={(e) => setForm({ ...form, requestedStoreName: e.target.value })}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, requestedStoreName: val }))}
                 />
               </div>
               <div>

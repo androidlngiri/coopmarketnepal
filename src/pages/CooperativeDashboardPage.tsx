@@ -26,6 +26,7 @@ import { apiFetch } from '../lib/utils';
 import { formatDateBS, formatNPR, toNepaliDigits } from '../lib/bs-date';
 import { labelFor, STATUS_LABELS } from '../lib/i18n';
 import { Input, Select, Textarea } from '../components/ui/input';
+import { NepaliInput, NepaliTextarea } from '../components/ui/nepali-input';
 import { Button } from '../components/ui/button';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import {
@@ -1174,11 +1175,12 @@ export function CooperativeDashboardPage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <Input
+                <NepaliInput
                   required
+                  defaultAutoNepali={true}
                   placeholder={lang === 'ne' ? 'नेपाली नाम *' : 'Nepali Name *'}
                   value={newProd.nameNe}
-                  onChange={(e) => setNewProd({ ...newProd, nameNe: e.target.value })}
+                  onValueChange={(val) => setNewProd((prev) => ({ ...prev, nameNe: val }))}
                 />
                 <Input
                   required
@@ -1295,10 +1297,11 @@ export function CooperativeDashboardPage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Textarea
+                <NepaliTextarea
+                  defaultAutoNepali={true}
                   placeholder={lang === 'ne' ? 'विस्तृत विवरण (नेपाली)' : 'Detailed description (Nepali)'}
                   value={newProd.descriptionNe}
-                  onChange={(e) => setNewProd({ ...newProd, descriptionNe: e.target.value })}
+                  onValueChange={(val) => setNewProd((prev) => ({ ...prev, descriptionNe: val }))}
                 />
                 <Textarea
                   placeholder={lang === 'ne' ? 'विस्तृत विवरण (English)' : 'Detailed description (English)'}
@@ -1379,13 +1382,15 @@ export function CooperativeDashboardPage() {
                   </span>
                 ))}
               </div>
-              <div className="flex flex-wrap gap-2 max-w-lg">
-                <Input
-                  placeholder={lang === 'ne' ? 'नेपाली वर्ग नाम' : 'Nepali name'}
-                  value={newCoopCat.nameNe}
-                  onChange={(e) => setNewCoopCat({ ...newCoopCat, nameNe: e.target.value })}
-                  className="flex-1 min-w-[140px]"
-                />
+              <div className="flex flex-wrap gap-2 max-w-lg items-start">
+                <div className="flex-1 min-w-[160px]">
+                  <NepaliInput
+                    defaultAutoNepali={true}
+                    placeholder={lang === 'ne' ? 'नेपाली वर्ग नाम' : 'Nepali name'}
+                    value={newCoopCat.nameNe}
+                    onValueChange={(val) => setNewCoopCat((prev) => ({ ...prev, nameNe: val }))}
+                  />
+                </div>
                 <Input
                   placeholder="English name"
                   value={newCoopCat.nameEn}
@@ -1432,11 +1437,12 @@ export function CooperativeDashboardPage() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <Input
+                  <NepaliInput
                     required
+                    defaultAutoNepali={true}
                     placeholder={lang === 'ne' ? 'नेपाली नाम *' : 'Nepali Name *'}
                     value={editingProd.nameNe}
-                    onChange={(e) => setEditingProd({ ...editingProd, nameNe: e.target.value })}
+                    onValueChange={(val) => setEditingProd((prev) => (prev ? { ...prev, nameNe: val } : prev))}
                   />
                   <Input
                     required
@@ -1565,10 +1571,11 @@ export function CooperativeDashboardPage() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Textarea
+                  <NepaliTextarea
+                    defaultAutoNepali={true}
                     placeholder={lang === 'ne' ? 'विवरण (नेपाली)' : 'Description (Nepali)'}
                     value={editingProd.descriptionNe}
-                    onChange={(e) => setEditingProd({ ...editingProd, descriptionNe: e.target.value })}
+                    onValueChange={(val) => setEditingProd((prev) => (prev ? { ...prev, descriptionNe: val } : prev))}
                   />
                   <Textarea
                     placeholder={lang === 'ne' ? 'विवरण (English)' : 'Description (English)'}
