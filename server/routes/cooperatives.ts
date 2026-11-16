@@ -109,13 +109,27 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 10, 15 * 60 * 1000), 
       });
     }
 
+    let verifiedByRegisteredPhoneOtp = false;
     const passwordValid = await verifySupabaseUserPassword(authUser.id, String(password));
     if (!passwordValid) {
-      return res.status(403).json({
-        error:
-          'तपाईंको हालको खाता पासवर्ड मिलेन। कृपया क्रेता खाता लगइन गर्दा प्रयोग गर्नुभएको पासवर्ड प्रविष्ट गर्नुहोस्।',
-        code: 'INVALID_ACCOUNT_PASSWORD',
-      });
+      if (otpCode && currentProfile.phone && currentProfile.phone === normalizedPhone) {
+        const otpOwnershipCheck = await verifyOtpCode({
+          phone: normalizedPhone,
+          purpose: 'coop_registration',
+          code: String(otpCode),
+        });
+        if (otpOwnershipCheck.valid) {
+          verifiedByRegisteredPhoneOtp = true;
+        }
+      }
+
+      if (!verifiedByRegisteredPhoneOtp) {
+        return res.status(403).json({
+          error:
+            'तपाईंको हालको खाता पासवर्ड मिलेन। कृपया सही पासवर्ड राख्नुहोस्, पासवर्ड रिसेट गर्नुहोस्, वा दर्ता मोबाइलमा OTP प्रमाणित गरी पेश गर्नुहोस्।',
+          code: 'INVALID_ACCOUNT_PASSWORD',
+        });
+      }
     }
 
     previousBuyerProfile = {
@@ -125,6 +139,9 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 10, 15 * 60 * 1000), 
       phone: currentProfile.phone,
       phone_verified_at: currentProfile.phone_verified_at,
     };
+    if (verifiedByRegisteredPhoneOtp) {
+      body.__verifiedByRegisteredPhoneOtp = true;
+    }
   }
 
   // Pre-check duplicate cooperative registration number
@@ -175,7 +192,10 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 10, 15 * 60 * 1000), 
 
   let initialStatus: 'pending_otp' | 'pending_review' = 'pending_otp';
   let otpVerifiedAt: string | null = null;
-  if (otpCode) {
+  if (body.__verifiedByRegisteredPhoneOtp) {
+    initialStatus = 'pending_review';
+    otpVerifiedAt = new Date().toISOString();
+  } else if (otpCode) {
     const otpCheck = await verifyOtpCode({
       phone: normalizedPhone,
       purpose: 'coop_registration',
@@ -248,6 +268,7 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 10, 15 * 60 * 1000), 
           role: 'cooperative_admin',
         },
         ...(otpVerifiedAt ? { phone_confirm: true } : {}),
+        ...(body.__verifiedByRegisteredPhoneOtp ? { password: String(password) } : {}),
       });
     } else {
       const createdUser = await createSupabaseAuthUser({

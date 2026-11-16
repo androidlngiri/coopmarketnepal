@@ -10,12 +10,14 @@ export function AuthPage() {
   const { lang, user, logout, navigate, refreshSession } = useApp();
   const [tab, setTab] = useState<'login' | 'buyer' | 'setup_admin'>('login');
   const [hasSuperAdmin, setHasSuperAdmin] = useState(true);
-  const [loginMode, setLoginMode] = useState<'password' | 'otp'>('password');
+  const [loginMode, setLoginMode] = useState<'password' | 'otp' | 'reset'>('password');
   const [otpSending, setOtpSending] = useState(false);
   const [otpNotice, setOtpNotice] = useState('');
+  const [resetMaskedPhone, setResetMaskedPhone] = useState('');
   const [loading, setLoading] = useState(false);
 
   const [loginForm, setLoginForm] = useState({ identifier: '', password: '', otpCode: '' });
+  const [resetForm, setResetForm] = useState({ identifier: '', otpCode: '', newPassword: '', confirmPassword: '' });
   const [buyerForm, setBuyerForm] = useState({ fullName: '', email: '', phone: '', password: '' });
   const [adminForm, setAdminForm] = useState({
     fullName: '',
@@ -91,6 +93,77 @@ export function AuthPage() {
     }
     if (res.data.localOtpNotice) setOtpNotice(res.data.localOtpNotice);
     else toast.success(lang === 'ne' ? 'OTP पठाइयो।' : 'OTP sent.');
+  };
+
+  const handleRequestResetOtp = async () => {
+    if (!resetForm.identifier.trim()) {
+      toast.error(
+        lang === 'ne' ? 'कृपया दर्ता भएको इमेल वा मोबाइल नम्बर प्रविष्ट गर्नुहोस्।' : 'Please enter your registered email or mobile number.'
+      );
+      return;
+    }
+    setOtpSending(true);
+    setOtpNotice('');
+    setResetMaskedPhone('');
+    const res = await apiFetch<{ maskedPhone?: string; localOtpNotice?: string }>('/api/auth/password-reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ identifier: resetForm.identifier }),
+    });
+    setOtpSending(false);
+    if (!res.ok) {
+      toast.error(res.error || 'OTP पठाउन सकिएन।');
+      return;
+    }
+    if (res.data.maskedPhone) {
+      setResetMaskedPhone(res.data.maskedPhone);
+    }
+    if (res.data.localOtpNotice) {
+      setOtpNotice(res.data.localOtpNotice);
+    } else {
+      toast.success(
+        lang === 'ne'
+          ? `तपाईंको मोबाइल नम्बर (${res.data.maskedPhone || ''}) मा पासवर्ड रिसेट OTP पठाइयो।`
+          : `Password reset OTP sent to ${res.data.maskedPhone || 'your mobile'}.`
+      );
+    }
+  };
+
+  const handleConfirmPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (resetForm.newPassword.length < 6) {
+      toast.error(lang === 'ne' ? 'नयाँ पासवर्ड कम्तीमा ६ अक्षरको हुनुपर्छ।' : 'Password must be at least 6 characters.');
+      return;
+    }
+    if (resetForm.newPassword !== resetForm.confirmPassword) {
+      toast.error(lang === 'ne' ? 'नयाँ पासवर्ड र पुष्टि पासवर्ड मिलेन।' : 'Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    const res = await apiFetch<{ user: { role: string } }>('/api/auth/password-reset/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        identifier: resetForm.identifier,
+        otpCode: resetForm.otpCode,
+        newPassword: resetForm.newPassword,
+      }),
+    });
+    setLoading(false);
+    if (!res.ok) {
+      toast.error(res.error || 'पासवर्ड रिसेट असफल भयो।');
+      return;
+    }
+    await refreshSession();
+    toast.success(lang === 'ne' ? 'पासवर्ड सफलतापूर्वक परिवर्तन गरी प्रवेश भयो!' : 'Password updated and signed in!');
+    const role = res.data.user.role;
+    if (safeRedirect && (role === 'buyer' || safeRedirect !== '/register-cooperative')) {
+      navigate(safeRedirect);
+    } else if (role === 'super_admin') {
+      navigate('/super-admin');
+    } else if (role === 'cooperative_admin' || role === 'cooperative_staff') {
+      navigate('/cooperative');
+    } else {
+      navigate('/account');
+    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -214,7 +287,112 @@ export function AuthPage() {
           )}
         </div>
 
-        {tab === 'login' && (
+        {tab === 'login' && loginMode === 'reset' && (
+          <form onSubmit={handleConfirmPasswordReset} className="space-y-4">
+            <div className="flex justify-between items-center gap-2">
+              <h1 className="font-display text-xl font-bold text-[#0F172A]">
+                {lang === 'ne' ? 'पासवर्ड रिसेट गर्नुहोस्' : 'Reset Forgotten Password'}
+              </h1>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMode('password');
+                  setOtpNotice('');
+                }}
+                className="text-xs font-medium text-[#B91C1C] hover:underline cursor-pointer shrink-0"
+              >
+                {lang === 'ne' ? '← लगइनमा फर्कनुहोस्' : '← Back to Sign In'}
+              </button>
+            </div>
+            <p className="text-xs text-[#57534E]">
+              {lang === 'ne'
+                ? 'तपाईंको खातामा दर्ता भएको इमेल वा मोबाइल नम्बर हाल्नुहोस्। दर्ता भएको मोबाइल नम्बरमा ६-अंकको OTP आउनेछ।'
+                : 'Enter your registered email or mobile number. We will send a 6-digit SMS OTP to your registered mobile.'}
+            </p>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-medium">
+                {lang === 'ne' ? 'दर्ता इमेल वा मोबाइल नम्बर *' : 'Registered Email or Mobile *'}
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  required
+                  value={resetForm.identifier}
+                  onChange={(e) => setResetForm({ ...resetForm, identifier: e.target.value })}
+                  placeholder="email@coop.np or 98XXXXXXXX"
+                />
+                <Button type="button" variant="outline" disabled={otpSending} onClick={handleRequestResetOtp}>
+                  {otpSending
+                    ? lang === 'ne'
+                      ? 'पठाउँदै...'
+                      : 'Sending...'
+                    : lang === 'ne'
+                    ? 'OTP पठाउनुहोस्'
+                    : 'Send OTP'}
+                </Button>
+              </div>
+              {resetMaskedPhone && (
+                <p className="text-xs text-[#15803D] font-medium">
+                  {lang === 'ne'
+                    ? `मोबाइल नम्बर ${resetMaskedPhone} मा OTP पठाइयो।`
+                    : `OTP sent to ${resetMaskedPhone}.`}
+                </p>
+              )}
+              {otpNotice && <p className="text-xs text-[#B91C1C] font-mono">{otpNotice}</p>}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium mb-1">
+                {lang === 'ne' ? '६-अंकको SMS OTP कोड *' : '6-Digit SMS OTP Code *'}
+              </label>
+              <Input
+                required
+                value={resetForm.otpCode}
+                onChange={(e) => setResetForm({ ...resetForm, otpCode: e.target.value })}
+                placeholder="123456"
+                className="font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium mb-1">
+                {lang === 'ne' ? 'नयाँ पासवर्ड (कम्तीमा ६ अक्षर) *' : 'New Password (min 6 chars) *'}
+              </label>
+              <Input
+                type="password"
+                required
+                minLength={6}
+                value={resetForm.newPassword}
+                onChange={(e) => setResetForm({ ...resetForm, newPassword: e.target.value })}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium mb-1">
+                {lang === 'ne' ? 'नयाँ पासवर्ड पुनः लेख्नुहोस् *' : 'Confirm New Password *'}
+              </label>
+              <Input
+                type="password"
+                required
+                minLength={6}
+                value={resetForm.confirmPassword}
+                onChange={(e) => setResetForm({ ...resetForm, confirmPassword: e.target.value })}
+              />
+            </div>
+
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading
+                ? lang === 'ne'
+                  ? 'अद्यावधिक हुँदैछ...'
+                  : 'Updating...'
+                : lang === 'ne'
+                ? 'नयाँ पासवर्ड सेट गरी प्रवेश गर्नुहोस्'
+                : 'Reset Password & Sign In'}
+            </Button>
+          </form>
+        )}
+
+        {tab === 'login' && loginMode !== 'reset' && (
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="flex justify-between items-center">
               <h1 className="font-display text-xl font-bold text-[#0F172A]">
@@ -249,7 +427,21 @@ export function AuthPage() {
 
             {loginMode === 'password' ? (
               <div>
-                <label className="block text-xs font-medium mb-1">{lang === 'ne' ? 'पासवर्ड' : 'Password'}</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium">{lang === 'ne' ? 'पासवर्ड' : 'Password'}</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetForm((prev) => ({ ...prev, identifier: prev.identifier || loginForm.identifier }));
+                      setOtpNotice('');
+                      setResetMaskedPhone('');
+                      setLoginMode('reset');
+                    }}
+                    className="text-xs font-medium text-[#B91C1C] hover:underline cursor-pointer"
+                  >
+                    {lang === 'ne' ? 'पासवर्ड बिर्सनुभयो?' : 'Forgot password?'}
+                  </button>
+                </div>
                 <Input
                   type="password"
                   required

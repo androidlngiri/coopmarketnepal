@@ -571,8 +571,8 @@ export function RegisterCooperativePage() {
                 {isBuyerUpgrade && (
                   <p className="text-[11px] text-[#57534E] mt-1">
                     {lang === 'ne'
-                      ? 'क्रेता खाता दर्ता गर्दा राख्नुभएको हालको पासवर्ड प्रविष्ट गरी प्रमाणित गर्नुहोस्।'
-                      : 'Enter your existing buyer account password to verify ownership.'}
+                      ? 'हालको खाता पासवर्ड प्रविष्ट गर्नुहोस्। (पासवर्ड बिर्सनुभएको भए तल मोबाइल OTP पठाएर ६-अंकको कोड राखी नयाँ पासवर्ड सेट गर्न पनि मिल्छ।)'
+                      : 'Enter your current password — or if forgotten, set a new password here and verify via SMS OTP to your registered phone below.'}
                   </p>
                 )}
               </div>

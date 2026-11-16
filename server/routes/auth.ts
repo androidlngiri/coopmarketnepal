@@ -280,6 +280,178 @@ authRouter.post('/login', rateLimit('login', 15, 10 * 60 * 1000), async (req, re
   });
 });
 
+function maskPhone(phone: string): string {
+  const clean = phone.trim();
+  if (clean.length < 6) return clean;
+  return `${clean.slice(0, 4)}****${clean.slice(-2)}`;
+}
+
+authRouter.post('/password-reset/request', rateLimit('pwd_reset_req', 8, 10 * 60 * 1000), async (req, res) => {
+  const { identifier } = req.body || {};
+  if (!identifier || !String(identifier).trim()) {
+    return res.status(400).json({ error: 'कृपया दर्ता भएको इमेल वा मोबाइल नम्बर प्रविष्ट गर्नुहोस्।' });
+  }
+
+  const sb = requireSupabaseAdmin();
+  const rawId = String(identifier).trim();
+  const normalizedPhone = normalizeNepalPhone(rawId);
+
+  let user: { id: string; email: string | null; phone: string | null; is_active: boolean } | null = null;
+  if (rawId.includes('@')) {
+    const { data } = await sb
+      .from('profiles')
+      .select('id, email, phone, is_active')
+      .ilike('email', rawId)
+      .limit(1)
+      .maybeSingle();
+    user = data;
+  } else {
+    const { data } = await sb
+      .from('profiles')
+      .select('id, email, phone, is_active')
+      .or(`phone.eq.${normalizedPhone},email.ilike.${rawId}`)
+      .limit(1)
+      .maybeSingle();
+    user = data;
+  }
+
+  if (!user || !user.is_active) {
+    return res.status(404).json({
+      error: 'यो इमेल वा मोबाइल नम्बरसँग मिल्ने सक्रिय खाता फेला परेन।',
+    });
+  }
+
+  if (!user.phone) {
+    return res.status(400).json({
+      error: 'यो खातामा मोबाइल नम्बर दर्ता नभएकोले SMS OTP पठाउन सकिएन। कृपया सहायता केन्द्रमा सम्पर्क गर्नुहोस्।',
+    });
+  }
+
+  const otpRes = await issueOtp({
+    phone: String(user.phone),
+    purpose: 'login',
+    ipAddress: req.ip,
+  });
+
+  if (!otpRes.ok) {
+    return res.status(429).json({
+      error: otpRes.error || 'OTP पठाउन सकिएन। कृपया केही बेरपछि पुनः प्रयास गर्नुहोस्।',
+      cooldownSeconds: otpRes.cooldownSeconds,
+    });
+  }
+
+  res.json({
+    ok: true,
+    maskedPhone: maskPhone(String(user.phone)),
+    smsConfigured: otpRes.smsConfigured,
+    smsSent: otpRes.smsSent,
+    expiresInSeconds: otpRes.expiresInSeconds,
+    ...(otpRes.localOtpNotice ? { localOtpNotice: otpRes.localOtpNotice } : {}),
+  });
+});
+
+authRouter.post('/password-reset/confirm', rateLimit('pwd_reset_conf', 10, 10 * 60 * 1000), async (req, res) => {
+  const { identifier, otpCode, newPassword } = req.body || {};
+  if (!identifier || !otpCode || !newPassword) {
+    return res.status(400).json({ error: 'इमेल/फोन, OTP कोड र नयाँ पासवर्ड सबै आवश्यक छन्।' });
+  }
+
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: 'नयाँ पासवर्ड कम्तीमा ६ अक्षरको हुनुपर्छ।' });
+  }
+
+  const sb = requireSupabaseAdmin();
+  const rawId = String(identifier).trim();
+  const normalizedPhone = normalizeNepalPhone(rawId);
+
+  let user: Record<string, unknown> | null = null;
+  if (rawId.includes('@')) {
+    const { data } = await sb.from('profiles').select('*').ilike('email', rawId).limit(1).maybeSingle();
+    user = data;
+  } else {
+    const { data } = await sb
+      .from('profiles')
+      .select('*')
+      .or(`phone.eq.${normalizedPhone},email.ilike.${rawId}`)
+      .limit(1)
+      .maybeSingle();
+    user = data;
+  }
+
+  if (!user || !user.is_active || !user.phone) {
+    return res.status(404).json({ error: 'मान्य सक्रिय खाता वा दर्ता मोबाइल नम्बर फेला परेन।' });
+  }
+
+  if (user.role === 'super_admin' && String(newPassword).length < 8) {
+    return res.status(400).json({ error: 'सुपर एडमिन पासवर्ड कम्तीमा ८ अक्षरको हुनुपर्छ।' });
+  }
+
+  const otpCheck = await verifyOtpCode({
+    phone: String(user.phone),
+    purpose: 'login',
+    code: String(otpCode),
+  });
+
+  if (!otpCheck.valid) {
+    return res.status(400).json({ error: otpCheck.error || 'गलत वा म्याद समाप्त OTP कोड।' });
+  }
+
+  const { error: authUpdateErr } = await sb.auth.admin.updateUserById(String(user.id), {
+    password: String(newPassword),
+    phone_confirm: true,
+  });
+
+  if (authUpdateErr) {
+    return res.status(500).json({ error: 'पासवर्ड अद्यावधिक गर्न असफल भयो।' });
+  }
+
+  await Promise.all([
+    sb
+      .from('profiles')
+      .update({
+        phone_verified_at: user.phone_verified_at || new Date().toISOString(),
+      })
+      .eq('id', String(user.id)),
+    sb.from('sessions').delete().eq('user_id', String(user.id)),
+  ]);
+
+  await writeAuditLog({
+    actorUserId: String(user.id),
+    actorRole: String(user.role),
+    action: 'password_reset_via_otp',
+    entityType: 'user',
+    entityId: String(user.id),
+    ipAddress: req.ip,
+  });
+
+  await createSession(String(user.id), req, res);
+
+  let cooperative: Record<string, unknown> | null = null;
+  if (user.role === 'cooperative_admin' || user.role === 'cooperative_staff') {
+    const { data: owned } = await sb
+      .from('cooperatives')
+      .select('id, slug, name_ne, name_en, status, logo_url')
+      .eq('owner_user_id', String(user.id))
+      .limit(1)
+      .maybeSingle();
+    if (owned) cooperative = owned;
+  }
+
+  res.json({
+    ok: true,
+    user: {
+      id: user.id,
+      full_name: user.full_name,
+      full_name_ne: user.full_name_ne,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      preferred_language: user.preferred_language,
+    },
+    cooperative,
+  });
+});
+
 authRouter.post('/logout', async (req, res) => {
   await destroySession(req, res);
   res.json({ ok: true });
