@@ -102,7 +102,7 @@ export function createExpressApp() {
     return fallback;
   };
 
-  app.get('/api/og', async (req, res) => {
+  const handleOgRequest = async (req: express.Request, res: express.Response) => {
     const baseUrl = resolvePublicBaseUrl(req);
     const type = String(req.query.type || '');
     const slug = String(req.query.slug || '').trim();
@@ -191,6 +191,15 @@ export function createExpressApp() {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     res.send(html);
+  };
+
+  app.get('/api/og', handleOgRequest);
+  app.use((req, res, next) => {
+    if (req.query.__og === '1') {
+      void handleOgRequest(req, res);
+      return;
+    }
+    next();
   });
 
   // Dynamic SEO Sitemap & Robots.txt backed by Supabase PostgreSQL

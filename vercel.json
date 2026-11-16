@@ -44,7 +44,7 @@
           "value": ".*(WhatsApp|facebookexternalhit|Facebot|Twitterbot|TelegramBot|Slackbot|LinkedInBot|Discordbot|Pinterest).*"
         }
       ],
-      "destination": "/api/og?type=store&slug=:slug"
+      "destination": "/api/index?__og=1&type=store&slug=:slug"
     },
     {
       "source": "/product/:slug",
@@ -55,7 +55,7 @@
           "value": ".*(WhatsApp|facebookexternalhit|Facebot|Twitterbot|TelegramBot|Slackbot|LinkedInBot|Discordbot|Pinterest).*"
         }
       ],
-      "destination": "/api/og?type=product&slug=:slug"
+      "destination": "/api/index?__og=1&type=product&slug=:slug"
     },
     {
       "source": "/((?!api|images|assets|favicon\\.ico|favicon\\.svg|favicon-32x32\\.png|apple-touch-icon\\.png|sitemap\\.xml|robots\\.txt).*)",
