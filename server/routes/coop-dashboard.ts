@@ -7,6 +7,8 @@ import {
   GeminiAssistantError,
   getGeminiModel,
   isGeminiConfigured,
+  prefillDashboardDraftWithGemini,
+  prefillStoreBuilderWithGemini,
 } from '../gemini.ts';
 import {
   createSupabaseAuthUser,
@@ -14,8 +16,16 @@ import {
   requireSupabaseAdmin,
 } from '../supabase-admin.ts';
 import { resolveDocumentAccessUrl, uploadBase64ToSupabaseStorage } from '../storage.ts';
+import { notifySuperAdmins } from '../services/notifications.ts';
 
 export const coopDashboardRouter = Router();
+
+const NEPAL_OFFSET_MS = 345 * 60 * 1000; // Asia/Kathmandu UTC+05:45
+
+function toNepalDateStr(input: string | number | Date): string {
+  const ts = typeof input === 'number' ? input : new Date(input).getTime();
+  return new Date(ts + NEPAL_OFFSET_MS).toISOString().slice(0, 10);
+}
 
 function sanitizeAiDetails(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== 'object') return {};
@@ -100,21 +110,19 @@ coopDashboardRouter.get('/overview', requireCooperativeAccess(), async (req, res
   const coopId = req.cooperativeId!;
   const sb = requireSupabaseAdmin();
 
-  const [{ coop, sub }, metricsRes, lowStockRes, recentOrdersRes, storeRes] = await Promise.all([
+  const [{ coop, sub }, allOrdersRes, allProductsRes, storeRes] = await Promise.all([
     getCoopAndSub(coopId),
-    sb.rpc('get_coop_overview_metrics', { p_cooperative_id: coopId }),
-    sb
-      .from('products')
-      .select('id, sku, name_ne, name_en, stock_quantity, low_stock_threshold')
-      .eq('cooperative_id', coopId)
-      .order('stock_quantity', { ascending: true })
-      .limit(50),
     sb
       .from('orders')
-      .select('*')
+      .select('id, order_number, customer_name, total_npr, status, created_at')
       .eq('cooperative_id', coopId)
-      .order('created_at', { ascending: false })
-      .limit(8),
+      .order('created_at', { ascending: false }),
+    sb
+      .from('products')
+      .select('id, sku, name_ne, name_en, status, stock_quantity, low_stock_threshold')
+      .eq('cooperative_id', coopId)
+      .is('deleted_at', null)
+      .order('stock_quantity', { ascending: true }),
     sb
       .from('stores')
       .select('logo_url, banner_url, store_name_ne, store_name_en, is_published')
@@ -122,30 +130,91 @@ coopDashboardRouter.get('/overview', requireCooperativeAccess(), async (req, res
       .maybeSingle(),
   ]);
 
-  const m = (metricsRes.data || {}) as Record<string, unknown>;
-  const lowStockItems = (lowStockRes.data || [])
-    .filter((p: Record<string, unknown>) => Number(p.stock_quantity) <= Number(p.low_stock_threshold))
+  const allOrders = (allOrdersRes.data || []) as Array<{
+    id: string;
+    order_number: string;
+    customer_name: string;
+    total_npr: number;
+    status: string;
+    created_at: string;
+  }>;
+  const allProducts = (allProductsRes.data || []) as Array<Record<string, unknown>>;
+
+  const nowMs = Date.now();
+  const todayStr = toNepalDateStr(nowMs);
+  const currentMonthStr = todayStr.slice(0, 7);
+
+  // Build full 14-day Nepal-timezone calendar series (oldest -> newest)
+  const dayBuckets = new Map<string, { day: string; revenue: number; order_count: number }>();
+  const dayOrder: string[] = [];
+  for (let offset = 13; offset >= 0; offset -= 1) {
+    const dayStr = toNepalDateStr(nowMs - offset * 24 * 60 * 60 * 1000);
+    dayOrder.push(dayStr);
+    dayBuckets.set(dayStr, { day: dayStr, revenue: 0, order_count: 0 });
+  }
+
+  let totalSales = 0;
+  let todaySales = 0;
+  let monthlySales = 0;
+  let pendingOrders = 0;
+  let last14DaysRevenue = 0;
+  let last14DaysOrders = 0;
+  let olderOrdersCount = 0;
+
+  for (const ord of allOrders) {
+    const isExcluded = ord.status === 'cancelled' || ord.status === 'refunded';
+    const amount = isExcluded ? 0 : Number(ord.total_npr || 0);
+    const ordDay = toNepalDateStr(ord.created_at);
+
+    if (!isExcluded) {
+      totalSales += amount;
+      if (ordDay === todayStr) todaySales += amount;
+      if (ordDay.startsWith(currentMonthStr)) monthlySales += amount;
+    }
+    if (ord.status === 'pending') {
+      pendingOrders += 1;
+    }
+
+    const bucket = dayBuckets.get(ordDay);
+    if (bucket) {
+      bucket.order_count += 1;
+      bucket.revenue = Number((bucket.revenue + amount).toFixed(2));
+      last14DaysOrders += 1;
+      last14DaysRevenue = Number((last14DaysRevenue + amount).toFixed(2));
+    } else {
+      olderOrdersCount += 1;
+    }
+  }
+
+  const dailySales = dayOrder.map((d) => dayBuckets.get(d)!);
+  const lowStockItems = allProducts
+    .filter((p) => Number(p.stock_quantity) <= Number(p.low_stock_threshold))
     .slice(0, 10);
 
   res.json({
     cooperative: coop,
     store: storeRes.data || null,
     subscription: sub,
-    metrics: m.metrics || {
-      total_sales: 0,
-      today_sales: 0,
-      monthly_sales: 0,
-      total_orders: 0,
-      pending_orders: 0,
+    metrics: {
+      total_sales: Number(totalSales.toFixed(2)),
+      today_sales: Number(todaySales.toFixed(2)),
+      monthly_sales: Number(monthlySales.toFixed(2)),
+      total_orders: allOrders.length,
+      pending_orders: pendingOrders,
     },
-    productStats: m.productStats || {
-      total_products: 0,
-      published_products: 0,
-      low_stock_count: 0,
+    productStats: {
+      total_products: allProducts.length,
+      published_products: allProducts.filter((p) => p.status === 'published').length,
+      low_stock_count: allProducts.filter((p) => Number(p.stock_quantity) <= Number(p.low_stock_threshold)).length,
     },
     lowStockItems,
-    dailySales: m.dailySales || [],
-    recentOrders: recentOrdersRes.data || [],
+    dailySales,
+    salesMeta: {
+      last14DaysRevenue,
+      last14DaysOrders,
+      olderOrdersCount,
+    },
+    recentOrders: allOrders.slice(0, 8),
   });
 });
 
@@ -312,6 +381,81 @@ coopDashboardRouter.put('/store', requireCooperativeAccess('manage_store'), asyn
     banner_url: updatePayload.banner_url,
   });
 });
+
+coopDashboardRouter.post(
+  '/store/ai-prefill',
+  rateLimit('coop_store_ai', 15, 10 * 60 * 1000),
+  requireCooperativeAccess('manage_store'),
+  async (req, res) => {
+    const coopId = req.cooperativeId!;
+    const language: 'ne' | 'en' = req.body?.language === 'en' ? 'en' : 'ne';
+    const hint = String(req.body?.hint || '').trim();
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({
+        error:
+          language === 'ne'
+            ? 'AI सेवा हाल कन्फिगर गरिएको छैन। कृपया म्यानुअल रूपमा भर्नुहोस्।'
+            : 'AI service is currently unconfigured.',
+      });
+    }
+    try {
+      const { coop } = await getCoopAndSub(coopId);
+      const prefill = await prefillStoreBuilderWithGemini({
+        coopNameNe: String(coop?.name_ne || ''),
+        coopNameEn: String(coop?.name_en || ''),
+        district: String(coop?.district || ''),
+        cooperativeType: String(coop?.cooperative_type || 'multipurpose'),
+        hint: hint || undefined,
+        language,
+      });
+      res.json({ prefill });
+    } catch (err) {
+      if (err instanceof GeminiAssistantError) {
+        return res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      }
+      return res.status(502).json({ error: 'AI स्टोर विवरण तयार पार्न सकिएन।' });
+    }
+  }
+);
+
+coopDashboardRouter.post(
+  '/ai-quick-fill',
+  rateLimit('coop_quick_ai', 20, 10 * 60 * 1000),
+  requireCooperativeAccess(),
+  async (req, res) => {
+    const coopId = req.cooperativeId!;
+    const kind = req.body?.kind;
+    if (!['promotion', 'delivery', 'support'].includes(kind)) {
+      return res.status(400).json({ error: 'Invalid AI quick-fill kind.' });
+    }
+    const language: 'ne' | 'en' = req.body?.language === 'en' ? 'en' : 'ne';
+    const hint = String(req.body?.hint || '').trim();
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({
+        error:
+          language === 'ne'
+            ? 'AI सेवा हाल कन्फिगर गरिएको छैन। कृपया म्यानुअल रूपमा भर्नुहोस्।'
+            : 'AI service is currently unconfigured.',
+      });
+    }
+    try {
+      const { coop } = await getCoopAndSub(coopId);
+      const draft = await prefillDashboardDraftWithGemini({
+        kind,
+        hint: hint || undefined,
+        coopName: language === 'ne' ? String(coop?.name_ne || '') : String(coop?.name_en || ''),
+        district: String(coop?.district || ''),
+        language,
+      });
+      res.json({ draft });
+    } catch (err) {
+      if (err instanceof GeminiAssistantError) {
+        return res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      }
+      return res.status(502).json({ error: 'AI ड्राफ्ट तयार पार्न सकिएन।' });
+    }
+  }
+);
 
 // 3. Cooperative Categories
 coopDashboardRouter.get('/categories', requireCooperativeAccess(), async (req, res) => {
@@ -997,10 +1141,32 @@ coopDashboardRouter.patch('/orders/:id/status', requireCooperativeAccess('manage
   }
 
   const info = (data || {}) as { order_number?: string; customer_phone?: string };
+
+  if (validStatus) {
+    const { data: orderRow } = await sb
+      .from('orders')
+      .select('buyer_user_id')
+      .eq('id', req.params.id)
+      .eq('cooperative_id', coopId)
+      .maybeSingle();
+
+    if (orderRow?.buyer_user_id) {
+      await sb.from('notifications').insert({
+        recipient_user_id: orderRow.buyer_user_id,
+        type: 'order_status_update',
+        title_ne: `अर्डर ${info.order_number || ''} स्थिति अद्यावधिक`,
+        title_en: `Order ${info.order_number || ''} Status Update`,
+        body_ne: `तपाईंको अर्डर स्थिति "${validStatus}" मा अद्यावधिक गरिएको छ।`,
+        body_en: `Your order status is now "${validStatus}".`,
+        action_url: '/account',
+      });
+    }
+  }
+
   if (validStatus && info.customer_phone) {
     await sendAkashSms({
       to: String(info.customer_phone),
-      text: `तपाईंको अर्डर ${info.order_number} को स्थिति "${validStatus}" मा अद्यावधिक गरिएको छ। - सहकारी बजार`,
+      text: `Sahakari Bazar: Order ${info.order_number} status is now ${validStatus}.`,
       purpose: 'order_status_update',
       cooperativeId: coopId,
     });
@@ -1358,6 +1524,17 @@ coopDashboardRouter.post('/billing/submit-payment', requireCooperativeAccess(), 
     .single();
 
   if (error) return res.status(400).json({ error: error.message });
+
+  await notifySuperAdmins({
+    type: 'subscription_payment_submitted',
+    titleNe: 'नयाँ सदस्यता भुक्तानी प्रमाणीकरण अनुरोध',
+    titleEn: 'New Subscription Payment Submitted',
+    bodyNe: `रु. ${amount} बराबरको सदस्यता भुक्तानी भौचर प्रमाणित गर्न बाँकी छ।`,
+    bodyEn: `NPR ${amount} subscription voucher awaiting review.`,
+    actionUrl: '/super-admin?tab=plans',
+    cooperativeId: req.cooperativeId!,
+  });
+
   res.status(201).json({ id: data.id });
 });
 
@@ -1442,6 +1619,16 @@ coopDashboardRouter.post('/support', requireCooperativeAccess(), async (req, res
     sender_user_id: req.authUser!.id,
     sender_role: req.authUser!.role,
     message,
+  });
+
+  await notifySuperAdmins({
+    type: 'support_ticket_opened',
+    titleNe: 'नयाँ सहकारी सहायता टिकट',
+    titleEn: 'New Cooperative Support Ticket',
+    bodyNe: `विषय: ${String(subject).slice(0, 80)}`,
+    bodyEn: `Subject: ${String(subject).slice(0, 80)}`,
+    actionUrl: '/super-admin?tab=logs',
+    cooperativeId: req.cooperativeId!,
   });
 
   res.status(201).json({ id: ticket.id });

@@ -321,10 +321,10 @@ checkoutRouter.post('/place-order', rateLimit('place_order', 10, 5 * 60 * 1000),
     }
 
     const createdOrders = result.orders || [];
-    const orderListText = createdOrders.map((o) => `${o.orderNumber} (रु.${o.totalNpr})`).join(', ');
+    const orderListText = createdOrders.map((o) => `${o.orderNumber} (Rs.${o.totalNpr})`).join(', ');
     await sendAkashSms({
       to: normalizedPhone,
-      text: `सहकारी बजारमा तपाईंको अर्डर पुष्टि भयो: ${orderListText}। धन्यवाद!`,
+      text: `Sahakari Bazar: Order confirmed (${orderListText}). Thank you!`,
       purpose: 'order_confirmation',
     });
 

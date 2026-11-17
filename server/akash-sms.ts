@@ -42,6 +42,21 @@ export function isValidNepalMobile(phone: string): boolean {
   return /^9[678]\d{8}$/.test(normalized);
 }
 
+export function formatSingleSegmentSms(rawText: string, maxLen = 158): string {
+  // GSM-7 single SMS allows 160 ASCII/basic chars (Unicode drops limit to 70).
+  // Normalize smart quotes/dashes and strip non-ASCII so every SMS stays within 1 SMS count.
+  const ascii = String(rawText || '')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (ascii.length <= maxLen) return ascii;
+  return `${ascii.slice(0, Math.max(0, maxLen - 3)).trimEnd()}...`;
+}
+
 export async function sendAkashSms(params: {
   to: string;
   text: string;
@@ -51,6 +66,16 @@ export async function sendAkashSms(params: {
   const sb = requireSupabaseAdmin();
   const normalizedPhone = normalizeNepalPhone(params.to);
   const authToken = getAkashAuthToken();
+  const smsText = formatSingleSegmentSms(params.text);
+
+  if (!isValidNepalMobile(normalizedPhone)) {
+    return {
+      configured: isAkashSmsConfigured(),
+      sent: false,
+      status: 'failed',
+      message: 'Invalid Nepal mobile number.',
+    };
+  }
 
   if (!isAkashSmsConfigured() || !authToken) {
     await sb.from('sms_logs').insert({
@@ -59,7 +84,7 @@ export async function sendAkashSms(params: {
       purpose: params.purpose,
       provider: 'akash_sms',
       status: 'unconfigured',
-      provider_response: 'AAKASH_SMS_AUTH_TOKEN not configured in environment',
+      provider_response: `UNCONFIGURED | 1-SMS(${smsText.length}): ${smsText}`,
     });
 
     return {
@@ -74,7 +99,7 @@ export async function sendAkashSms(params: {
     const formBody = new URLSearchParams({
       auth_token: authToken,
       to: normalizedPhone,
-      text: params.text,
+      text: smsText,
     });
 
     const response = await fetch(AKASH_API_URL, {
@@ -220,7 +245,7 @@ export async function issueOtp(params: {
     ip_address: params.ipAddress ?? null,
   });
 
-  const smsText = `तपाईंको सहकारी बजार प्रमाणीकरण कोड (OTP): ${code}। यो कोड ५ मिनेटमा समाप्त हुन्छ।`;
+  const smsText = `Sahakari Bazar OTP: ${code}. Valid for 5 mins. Do not share.`;
   const smsResult = await sendAkashSms({
     to: phone,
     text: smsText,

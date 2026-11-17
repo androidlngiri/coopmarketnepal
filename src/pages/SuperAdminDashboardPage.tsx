@@ -22,9 +22,16 @@ import { Input, Select } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { DataCleanupMaintenancePanel } from '../components/admin/DataCleanupMaintenancePanel';
+import { NotificationBell } from '../components/NotificationBell';
 import { toast } from 'sonner';
 
 type AdminTab = 'overview' | 'cooperatives' | 'plans' | 'marketplace' | 'users' | 'logs' | 'maintenance';
+const VALID_ADMIN_TABS: AdminTab[] = ['overview', 'cooperatives', 'plans', 'marketplace', 'users', 'logs', 'maintenance'];
+
+function resolveAdminTabFromUrl(): AdminTab {
+  const param = new URLSearchParams(window.location.search).get('tab') as AdminTab | null;
+  return param && VALID_ADMIN_TABS.includes(param) ? param : 'overview';
+}
 
 interface ConfirmState {
   open: boolean;
@@ -60,8 +67,8 @@ interface AiUsagePayload {
 }
 
 export function SuperAdminDashboardPage() {
-  const { lang, user, logout, navigate } = useApp();
-  const [tab, setTab] = useState<AdminTab>('overview');
+  const { lang, user, logout, navigate, currentPath } = useApp();
+  const [tab, setTab] = useState<AdminTab>(() => resolveAdminTabFromUrl());
   const [loadingTab, setLoadingTab] = useState(false);
 
   const [overview, setOverview] = useState<Record<string, unknown> | null>(null);
@@ -170,6 +177,10 @@ export function SuperAdminDashboardPage() {
       setLoadingTab(false);
     }
   };
+
+  useEffect(() => {
+    setTab(resolveAdminTabFromUrl());
+  }, [currentPath]);
 
   useEffect(() => {
     if (user?.role === 'super_admin') loadTab(tab);
@@ -322,20 +333,23 @@ export function SuperAdminDashboardPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       <aside className="lg:col-span-3 bg-white border border-[#E5E2DC] rounded-xl p-4 space-y-4">
         <div className="pb-3 border-b border-[#E5E2DC] flex items-center justify-between gap-2">
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-[#B91C1C] font-semibold">SaaS Super Admin</p>
-            <p className="font-semibold text-sm text-[#0F172A]">{user.full_name}</p>
+            <p className="font-semibold text-sm text-[#0F172A] truncate">{user.full_name}</p>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={loadingTab}
-            onClick={() => loadTab(tab)}
-            title={lang === 'ne' ? 'ताजा गर्नुहोस्' : 'Refresh'}
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loadingTab ? 'animate-spin' : ''}`} />
-          </Button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <NotificationBell compact />
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={loadingTab}
+              onClick={() => loadTab(tab)}
+              title={lang === 'ne' ? 'ताजा गर्नुहोस्' : 'Refresh'}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingTab ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
         </div>
         <nav className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-1 gap-1">
           {navItems.map((item) => (

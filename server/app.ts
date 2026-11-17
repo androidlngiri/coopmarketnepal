@@ -7,6 +7,7 @@ import { cooperativesRouter } from './routes/cooperatives.ts';
 import { buyerRouter, checkoutRouter } from './routes/checkout.ts';
 import { coopDashboardRouter } from './routes/coop-dashboard.ts';
 import { adminRouter } from './routes/admin.ts';
+import { notificationsRouter } from './routes/notifications.ts';
 import { getSupabaseAdminClient } from './supabase-admin.ts';
 
 export function createExpressApp() {
@@ -73,6 +74,7 @@ export function createExpressApp() {
   app.use('/api/orders', checkoutRouter);
   app.use('/api/coop-dashboard', coopDashboardRouter);
   app.use('/api/admin', adminRouter);
+  app.use('/api/notifications', notificationsRouter);
 
   // Dynamic OpenGraph Preview HTML for WhatsApp / Facebook / Telegram / X crawlers on /store/:slug & /product/:slug
   const escapeHtml = (str: string) =>

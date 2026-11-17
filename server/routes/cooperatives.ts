@@ -4,8 +4,44 @@ import { createSession, rateLimit, requireAuth, writeAuditLog } from '../auth.ts
 import { issueOtp, normalizeNepalPhone, verifyOtpCode } from '../akash-sms.ts';
 import { createSupabaseAuthUser, requireSupabaseAdmin, verifySupabaseUserPassword } from '../supabase-admin.ts';
 import { resolveDocumentAccessUrl, uploadBase64ToSupabaseStorage } from '../storage.ts';
+import {
+  GeminiAssistantError,
+  isGeminiConfigured,
+  prefillCooperativeRegistrationWithGemini,
+} from '../gemini.ts';
+import { notifySuperAdmins } from '../services/notifications.ts';
 
 export const cooperativesRouter = Router();
+
+cooperativesRouter.post('/ai-prefill', rateLimit('coop_ai_prefill', 15, 10 * 60 * 1000), async (req, res) => {
+  const hint = String(req.body?.hint || '').trim();
+  const language: 'ne' | 'en' = req.body?.language === 'en' ? 'en' : 'ne';
+  if (hint.length < 3 || hint.length > 500) {
+    return res.status(400).json({
+      error:
+        language === 'ne'
+          ? 'कृपया कम्तीमा ३ अक्षरमा सहकारीको नाम र स्थान (जस्तै: सगरमाथा कृषि सहकारी, इलाम) लेख्नुहोस्।'
+          : 'Please describe your cooperative in at least 3 characters (e.g. Sagarmatha Agro Coop, Ilam).',
+    });
+  }
+  if (!isGeminiConfigured()) {
+    return res.status(503).json({
+      error:
+        language === 'ne'
+          ? 'AI प्रिफिल सेवा हाल कन्फिगर गरिएको छैन। कृपया फारम म्यानुअल रूपमा भर्नुहोस्।'
+          : 'AI prefill is currently unconfigured. Please fill fields manually.',
+    });
+  }
+  try {
+    const prefill = await prefillCooperativeRegistrationWithGemini({ hint, language });
+    res.json({ prefill });
+  } catch (err) {
+    if (err instanceof GeminiAssistantError) {
+      return res.status(err.httpStatus).json({ error: err.message, code: err.code });
+    }
+    return res.status(502).json({ error: 'AI प्रिफिल असफल भयो।' });
+  }
+});
 
 function slugify(input: string): string {
   return input
@@ -373,26 +409,26 @@ cooperativesRouter.post('/register', rateLimit('coop_reg', 10, 15 * 60 * 1000), 
       pickup_address_ne: `${toleAddress}, ${municipality}-${wardNumber}, ${district}`,
     });
 
-    if (initialStatus === 'pending_review') {
-      const { data: admins } = await sb
-        .from('platform_administrators')
-        .select('user_id')
-        .eq('is_active', true);
-
-      if (admins && admins.length > 0) {
-        await sb.from('notifications').insert(
-          admins.map((a: { user_id: string }) => ({
-            recipient_user_id: a.user_id,
-            type: 'coop_pending_review',
-            title_ne: 'नयाँ सहकारी स्वीकृति अनुरोध',
-            title_en: 'New Cooperative Approval Request',
-            body_ne: `${nameNe} (${district}) समीक्षाको लागि प्रतीक्षारत छ।`,
-            body_en: `${nameEn} (${district}) is awaiting verification.`,
-            action_url: '/super-admin',
-          }))
-        );
-      }
-    }
+    const cleanCoopNameNe = String(nameNe).trim();
+    const cleanCoopNameEn = String(nameEn).trim();
+    const cleanDistrict = String(district).trim();
+    await notifySuperAdmins({
+      type: initialStatus === 'pending_review' ? 'coop_pending_review' : 'coop_registered',
+      titleNe:
+        initialStatus === 'pending_review'
+          ? 'नयाँ सहकारी स्वीकृति अनुरोध'
+          : 'नयाँ सहकारी दर्ता (OTP बाँकी)',
+      titleEn:
+        initialStatus === 'pending_review'
+          ? 'New Cooperative Approval Request'
+          : 'New Cooperative Registered (OTP Pending)',
+      bodyNe: `${cleanCoopNameNe} (${cleanDistrict}) दर्ता भएको छ${initialStatus === 'pending_review' ? ' र समीक्षाको लागि प्रतीक्षारत छ।' : ' (मोबाइल OTP प्रतीक्षारत)।'}`,
+      bodyEn: `${cleanCoopNameEn} (${cleanDistrict}) registered (${initialStatus}).`,
+      actionUrl: '/super-admin?tab=cooperatives',
+      smsText: `Sahakari Bazar Alert: New Coop ${cleanCoopNameEn} (${normalizedPhone}) registered.`,
+      smsPurpose: 'admin_alert_coop_registered',
+      cooperativeId: coopId,
+    });
 
     await writeAuditLog({
       actorUserId: userId,
@@ -498,6 +534,16 @@ cooperativesRouter.post('/verify-otp', requireAuth, async (req, res) => {
       changed_by: req.authUser!.id,
     }),
   ]);
+
+  await notifySuperAdmins({
+    type: 'coop_pending_review',
+    titleNe: 'सहकारी OTP प्रमाणित — समीक्षा तयार',
+    titleEn: 'Cooperative OTP Verified — Ready for Review',
+    bodyNe: `${coop.name_ne} (${coop.district}) ले मोबाइल OTP प्रमाणित गर्यो र स्वीकृतिको प्रतीक्षामा छ।`,
+    bodyEn: `${coop.name_en} (${coop.district}) verified OTP and awaits approval.`,
+    actionUrl: '/super-admin?tab=cooperatives',
+    cooperativeId: coop.id,
+  });
 
   res.json({ ok: true, status: 'pending_review' });
 });

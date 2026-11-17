@@ -12,6 +12,7 @@ import {
   requireSupabaseAdmin,
   verifySupabaseUserPassword,
 } from '../supabase-admin.ts';
+import { notifySuperAdmins } from '../services/notifications.ts';
 
 export const authRouter = Router();
 
@@ -171,6 +172,19 @@ authRouter.post('/register-buyer', rateLimit('reg_buyer', 10, 15 * 60 * 1000), a
     .select('id, full_name, full_name_ne, email, phone, role, preferred_language')
     .eq('id', userId)
     .single();
+
+  const cleanName = String(fullName).trim();
+  const contact = normalizedPhone || cleanEmail || 'New Buyer';
+  await notifySuperAdmins({
+    type: 'new_buyer_registered',
+    titleNe: 'नयाँ क्रेता खाता दर्ता',
+    titleEn: 'New Buyer Registered',
+    bodyNe: `${cleanName} (${contact}) ले क्रेता खाता खोल्नुभएको छ।`,
+    bodyEn: `${cleanName} (${contact}) created a new buyer account.`,
+    actionUrl: '/super-admin?tab=users',
+    smsText: `Sahakari Bazar Alert: New Buyer ${cleanName} (${contact}) registered.`,
+    smsPurpose: 'admin_alert_buyer_registered',
+  });
 
   res.status(201).json({ user });
 });

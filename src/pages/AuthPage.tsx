@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import { ArrowRight, CheckCircle2, LogIn, ShieldAlert, ShoppingBag, Store, UserPlus } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { Input } from '../components/ui/input';
@@ -7,8 +7,11 @@ import { Button } from '../components/ui/button';
 import { toast } from 'sonner';
 
 export function AuthPage() {
-  const { lang, user, logout, navigate, refreshSession } = useApp();
-  const [tab, setTab] = useState<'login' | 'buyer' | 'setup_admin'>('login');
+  const { lang, user, logout, navigate, refreshSession, currentPath } = useApp();
+  const [tab, setTab] = useState<'login' | 'buyer' | 'setup_admin'>(() => {
+    const tParam = new URLSearchParams(window.location.search).get('tab');
+    return tParam === 'buyer' ? 'buyer' : 'login';
+  });
   const [hasSuperAdmin, setHasSuperAdmin] = useState(true);
   const [loginMode, setLoginMode] = useState<'password' | 'otp' | 'reset'>('password');
   const [otpSending, setOtpSending] = useState(false);
@@ -34,6 +37,12 @@ export function AuthPage() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    const tParam = new URLSearchParams(window.location.search).get('tab');
+    if (tParam === 'buyer') setTab('buyer');
+    else if (tParam === 'login') setTab('login');
+  }, [currentPath]);
 
   const redirectParam = new URLSearchParams(window.location.search).get('redirect') || '';
   const safeRedirect = redirectParam.startsWith('/') && !redirectParam.startsWith('//') ? redirectParam : null;
@@ -232,7 +241,7 @@ export function AuthPage() {
   };
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12 space-y-6">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-6">
       {!hasSuperAdmin && (
         <div className="p-4 rounded-xl border border-amber-300 bg-amber-50 space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
@@ -254,38 +263,160 @@ export function AuthPage() {
         </div>
       )}
 
-      <div className="bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-6">
-        <div className="flex gap-1 p-1 bg-[#F3F1EC] rounded-lg">
-          <button
-            type="button"
-            onClick={() => setTab('login')}
-            className={`flex-1 py-2 text-xs font-semibold rounded-md cursor-pointer ${
-              tab === 'login' ? 'bg-white text-[#0F172A]' : 'text-[#57534E]'
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left: Crystal-Clear Role & Onboarding Guide */}
+        <div className="lg:col-span-5 space-y-4">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-[#B91C1C]">
+              {lang === 'ne' ? 'सहकारी बजार प्रवेश र दर्ता मार्गदर्शक' : 'Sign In & Onboarding Guide'}
+            </p>
+            <h2 className="font-display text-2xl font-bold text-[#0F172A]">
+              {lang === 'ne' ? 'तपाईं कुन भूमिकामा आबद्ध हुन चाहनुहुन्छ?' : 'How would you like to continue?'}
+            </h2>
+            <p className="text-xs text-[#57534E] leading-relaxed">
+              {lang === 'ne'
+                ? 'तपाईंको उद्देश्य अनुसार तलका फरक विकल्पहरू छान्नुहोस्।'
+                : 'Choose the distinct path that matches what you want to do on Sahakari Bazar.'}
+            </p>
+          </div>
+
+          {/* Card 1: Buyer */}
+          <div
+            className={`rounded-xl border p-5 space-y-3 transition-colors ${
+              tab === 'buyer'
+                ? 'border-[#0F172A] bg-white shadow-sm'
+                : 'border-[#E5E2DC] bg-white'
             }`}
           >
-            {lang === 'ne' ? 'लगइन' : 'Sign In'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('buyer')}
-            className={`flex-1 py-2 text-xs font-semibold rounded-md cursor-pointer ${
-              tab === 'buyer' ? 'bg-white text-[#0F172A]' : 'text-[#57534E]'
-            }`}
-          >
-            {lang === 'ne' ? 'क्रेता दर्ता' : 'Buyer Sign Up'}
-          </button>
-          {!hasSuperAdmin && (
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[#0F172A]/10 text-[#0F172A] flex items-center justify-center shrink-0">
+                <ShoppingBag className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-[#0F172A]">
+                  {lang === 'ne' ? '१. क्रेता / ग्राहक (Buyer)' : '1. Shopper / Buyer'}
+                </h3>
+                <p className="text-[11px] text-[#57534E]">
+                  {lang === 'ne' ? 'उत्पादन खरिद र अर्डर ट्र्याक गर्न' : 'For buying local products & tracking orders'}
+                </p>
+              </div>
+            </div>
+            <ul className="space-y-1 text-xs text-[#57534E]">
+              <li className="flex items-start gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#15803D] shrink-0 mt-0.5" />
+                <span>
+                  {lang === 'ne'
+                    ? 'अर्डर इतिहास, ठेगाना र मनपर्ने उत्पादन (Wishlist) सुरक्षित राख्नुहोस्।'
+                    : 'Save delivery addresses, view invoices, reorder, and save wishlists.'}
+                </span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#15803D] shrink-0 mt-0.5" />
+                <span>
+                  {lang === 'ne'
+                    ? 'नोट: खाता नखोली नै सिधै Guest Checkout बाट पनि किन्न सकिन्छ।'
+                    : 'Note: You can also buy directly via Guest Checkout without registering.'}
+                </span>
+              </li>
+            </ul>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button
+                type="button"
+                size="sm"
+                variant={tab === 'login' ? 'default' : 'outline'}
+                onClick={() => setTab('login')}
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                {lang === 'ne' ? 'पहिले नै खाता छ (Sign In)' : 'Existing User Sign In'}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={tab === 'buyer' ? 'secondary' : 'outline'}
+                onClick={() => setTab('buyer')}
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                {lang === 'ne' ? 'नयाँ क्रेता दर्ता' : 'New Buyer Sign Up'}
+              </Button>
+            </div>
+          </div>
+
+          {/* Card 2: Cooperative Seller */}
+          <div className="rounded-xl border border-[#B91C1C]/30 bg-[#FAF9F6] p-5 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[#B91C1C]/10 text-[#B91C1C] flex items-center justify-center shrink-0">
+                <Store className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-[#0F172A]">
+                  {lang === 'ne' ? '२. सहकारी संस्था / विक्रेता (Cooperative Seller)' : '2. Cooperative Storefront Seller'}
+                </h3>
+                <p className="text-[11px] text-[#57534E]">
+                  {lang === 'ne' ? 'आफ्नै अनलाइन पसल खोली उत्पादन बेच्न' : 'Launch your verified cooperative storefront'}
+                </p>
+              </div>
+            </div>
+            <ul className="space-y-1 text-xs text-[#57534E]">
+              <li className="flex items-start gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#15803D] shrink-0 mt-0.5" />
+                <span>
+                  {lang === 'ne'
+                    ? 'बिचौलिया बिना नेपालभर प्रत्यक्ष अनलाइन बिक्री र अर्डर व्यवस्थापन।'
+                    : 'Sell directly nationwide with zero middlemen & instant SMS order alerts.'}
+                </span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#15803D] shrink-0 mt-0.5" />
+                <span>
+                  {lang === 'ne'
+                    ? 'AI बाट १ क्लिकमै पसल र उत्पादन विवरण तयार हुने सुविधा।'
+                    : 'AI Smart Prefill drafts store profiles & product pages in seconds.'}
+                </span>
+              </li>
+            </ul>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button type="button" size="sm" onClick={() => navigate('/register-cooperative')}>
+                <Store className="w-3.5 h-3.5" />
+                <span>{lang === 'ne' ? 'नयाँ सहकारी दर्ता गर्नुहोस्' : 'Register New Cooperative'}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Focused Sign In / Sign Up Form Card */}
+        <div className="lg:col-span-7 bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-6">
+          <div className="flex gap-1.5 p-1 bg-[#F3F1EC] rounded-lg">
             <button
               type="button"
-              onClick={() => setTab('setup_admin')}
-              className={`flex-1 py-2 text-xs font-semibold rounded-md cursor-pointer ${
-                tab === 'setup_admin' ? 'bg-white text-[#0F172A]' : 'text-[#57534E]'
+              onClick={() => setTab('login')}
+              className={`flex-1 py-2.5 text-xs font-semibold rounded-md cursor-pointer transition-colors ${
+                tab === 'login' ? 'bg-white text-[#0F172A] shadow-sm' : 'text-[#57534E] hover:text-[#0F172A]'
               }`}
             >
-              {lang === 'ne' ? 'एडमिन सेटअप' : 'Admin Setup'}
+              {lang === 'ne' ? 'साइन इन / लगइन (Sign In)' : 'Sign In (All Roles)'}
             </button>
-          )}
-        </div>
+            <button
+              type="button"
+              onClick={() => setTab('buyer')}
+              className={`flex-1 py-2.5 text-xs font-semibold rounded-md cursor-pointer transition-colors ${
+                tab === 'buyer' ? 'bg-white text-[#0F172A] shadow-sm' : 'text-[#57534E] hover:text-[#0F172A]'
+              }`}
+            >
+              {lang === 'ne' ? 'नयाँ क्रेता दर्ता (Buyer)' : 'New Buyer Sign Up'}
+            </button>
+            {!hasSuperAdmin && (
+              <button
+                type="button"
+                onClick={() => setTab('setup_admin')}
+                className={`flex-1 py-2.5 text-xs font-semibold rounded-md cursor-pointer transition-colors ${
+                  tab === 'setup_admin' ? 'bg-white text-[#0F172A] shadow-sm' : 'text-[#57534E]'
+                }`}
+              >
+                {lang === 'ne' ? 'एडमिन सेटअप' : 'Admin Setup'}
+              </button>
+            )}
+          </div>
 
         {tab === 'login' && loginMode === 'reset' && (
           <form onSubmit={handleConfirmPasswordReset} className="space-y-4">
@@ -576,7 +707,9 @@ export function AuthPage() {
             </Button>
           </form>
         )}
+        </div>
       </div>
     </div>
   );
 }
+

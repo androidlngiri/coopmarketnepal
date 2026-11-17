@@ -1,6 +1,6 @@
 import { GoogleGenAI, ThinkingLevel, Type, type Schema } from '@google/genai';
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
+export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen';
 
 export function getGeminiModel(): string {
   const configured = process.env.GEMINI_MODEL?.trim();
@@ -294,31 +294,136 @@ function normalizeAiPayload(
   };
 }
 
+function createGeminiClient(): { ai: GoogleGenAI; model: string } {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new GeminiAssistantError(
+      'AI_UNCONFIGURED',
+      'AI सेवा हाल सर्भरमा कन्फिगर गरिएको छैन। कृपया म्यानुअल रूपमा विवरण भर्नुहोस्।',
+      503
+    );
+  }
+
+  return {
+    model: getGeminiModel(),
+    ai: new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    }),
+  };
+}
+
+function mapGeminiRuntimeError(err: unknown, model: string): GeminiAssistantError {
+  if (err instanceof GeminiAssistantError) {
+    return err;
+  }
+
+  const status = (err as { status?: number })?.status;
+  const msg = err instanceof Error ? err.message : String(err);
+
+  if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg)) {
+    return new GeminiAssistantError(
+      'AI_QUOTA_EXHAUSTED',
+      'AI सेवाको हालको अनुरोध सीमा पूरा भएको छ। तपाईं म्यानुअल रूपमा विवरण भरेर सुरक्षित गर्न सक्नुहुन्छ।',
+      429
+    );
+  }
+  if (status === 400 || status === 401 || status === 403 || /API_KEY_INVALID|PERMISSION_DENIED/i.test(msg)) {
+    return new GeminiAssistantError(
+      'AI_AUTH_ERROR',
+      'AI सेवा कुञ्जी मान्य छैन वा अनुमति अस्वीकृत भयो। कृपया म्यानुअल प्रविष्टि जारी राख्नुहोस्।',
+      503
+    );
+  }
+  if (status === 404 || /NOT_FOUND|not found/i.test(msg)) {
+    return new GeminiAssistantError(
+      'AI_MODEL_NOT_FOUND',
+      `चयन गरिएको AI मोडेल (${model}) उपलब्ध छैन। म्यानुअल प्रविष्टि जारी राख्नुहोस्।`,
+      502
+    );
+  }
+
+  return new GeminiAssistantError(
+    'AI_FAILED',
+    'AI सहायक हाल अस्थायी रूपमा अनुपलब्ध छ। कृपया म्यानुअल रूपमा विवरण भर्नुहोस्।',
+    502
+  );
+}
+
+async function runStructuredGeminiPrompt<T>(params: {
+  systemInstruction: string;
+  userPrompt: string;
+  responseSchema: Schema;
+  timeoutMs?: number;
+}): Promise<{ parsed: T; model: string; promptTokens: number | null; outputTokens: number | null }> {
+  const { ai, model } = createGeminiClient();
+  const timeoutMs = params.timeoutMs ?? 45_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model,
+        contents: params.userPrompt,
+        config: {
+          systemInstruction: params.systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: params.responseSchema,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new GeminiAssistantError(
+              'AI_TIMEOUT',
+              'AI प्रतिक्रिया समय समाप्त भयो। कृपया पुनः प्रयास वा म्यानुअल प्रविष्टि गर्नुहोस्।',
+              504
+            )
+          );
+        }, timeoutMs);
+      }),
+    ]);
+
+    const rawText = (response.text ?? '').trim();
+    if (!rawText) {
+      throw new GeminiAssistantError('AI_INVALID_OUTPUT', 'AI बाट खाली प्रतिक्रिया प्राप्त भयो।', 502);
+    }
+
+    let parsed: T;
+    try {
+      parsed = JSON.parse(rawText) as T;
+    } catch {
+      throw new GeminiAssistantError('AI_INVALID_OUTPUT', 'AI प्रतिक्रिया JSON ढाँचामा प्राप्त भएन।', 502);
+    }
+
+    const usage = response.usageMetadata as
+      | { promptTokenCount?: number; candidatesTokenCount?: number }
+      | undefined;
+
+    return {
+      parsed,
+      model,
+      promptTokens: typeof usage?.promptTokenCount === 'number' ? usage.promptTokenCount : null,
+      outputTokens: typeof usage?.candidatesTokenCount === 'number' ? usage.candidatesTokenCount : null,
+    };
+  } catch (err) {
+    throw mapGeminiRuntimeError(err, model);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function generateProductWithGemini(input: AiGenerateProductInput): Promise<{
   data: AiGeneratedProductData;
   model: string;
   promptTokens: number | null;
   outputTokens: number | null;
 }> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new GeminiAssistantError(
-      'AI_UNCONFIGURED',
-      'AI सेवा हाल सर्भरमा कन्फिगर गरिएको छैन। कृपया म्यानुअल रूपमा उत्पादन विवरण भर्नुहोस्।',
-      503
-    );
-  }
-
-  const model = getGeminiModel();
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-
   const primaryLangLabel =
     input.language === 'en'
       ? 'English (clear, natural, customer-friendly English for Nepali and international buyers; still populate *_ne fields accurately in Nepali Devanagari)'
@@ -357,87 +462,295 @@ STRICT ACCURACY & SAFETY RULES:
     .filter(Boolean)
     .join('\n');
 
-  const timeoutMs = 45_000;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const thinkingLevel = model.includes('flash-lite') ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
+  const { parsed, model, promptTokens, outputTokens } = await runStructuredGeminiPrompt<Record<string, unknown>>({
+    systemInstruction,
+    userPrompt,
+    responseSchema: productResponseSchema,
+  });
 
-  try {
-    const response = await Promise.race([
-      ai.models.generateContent({
-        model,
-        contents: userPrompt,
-        config: {
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: productResponseSchema,
-          thinkingConfig: { thinkingLevel },
-        },
-      }),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(new GeminiAssistantError('AI_TIMEOUT', 'AI प्रतिक्रिया समय समाप्त भयो। कृपया पुनः प्रयास वा म्यानुअल प्रविष्टि गर्नुहोस्।', 504));
-        }, timeoutMs);
-      }),
-    ]);
-
-    const rawText = (response.text ?? '').trim();
-    if (!rawText) {
-      throw new GeminiAssistantError('AI_INVALID_OUTPUT', 'AI बाट खाली प्रतिक्रिया प्राप्त भयो।', 502);
-    }
-
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(rawText) as Record<string, unknown>;
-    } catch {
-      throw new GeminiAssistantError('AI_INVALID_OUTPUT', 'AI प्रतिक्रिया JSON ढाँचामा प्राप्त भएन।', 502);
-    }
-
-    const usage = response.usageMetadata as
-      | { promptTokenCount?: number; candidatesTokenCount?: number }
-      | undefined;
-
-    return {
-      data: normalizeAiPayload(parsed, input.globalCategories),
-      model,
-      promptTokens: typeof usage?.promptTokenCount === 'number' ? usage.promptTokenCount : null,
-      outputTokens: typeof usage?.candidatesTokenCount === 'number' ? usage.candidatesTokenCount : null,
-    };
-  } catch (err) {
-    if (err instanceof GeminiAssistantError) {
-      throw err;
-    }
-
-    const status = (err as { status?: number })?.status;
-    const msg = err instanceof Error ? err.message : String(err);
-
-    if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg)) {
-      throw new GeminiAssistantError(
-        'AI_QUOTA_EXHAUSTED',
-        'AI सेवाको हालको अनुरोध सीमा पूरा भएको छ। तपाईं म्यानुअल रूपमा उत्पादन विवरण भरेर सुरक्षित गर्न सक्नुहुन्छ।',
-        429
-      );
-    }
-    if (status === 400 || status === 401 || status === 403 || /API_KEY_INVALID|PERMISSION_DENIED/i.test(msg)) {
-      throw new GeminiAssistantError(
-        'AI_AUTH_ERROR',
-        'AI सेवा कुञ्जी मान्य छैन वा अनुमति अस्वीकृत भयो। म्यानुअल प्रविष्टि जारी राख्नुहोस्।',
-        503
-      );
-    }
-    if (status === 404 || /NOT_FOUND|not found/i.test(msg)) {
-      throw new GeminiAssistantError(
-        'AI_MODEL_NOT_FOUND',
-        `चयन गरिएको AI मोडेल (${model}) उपलब्ध छैन। म्यानुअल प्रविष्टि जारी राख्नुहोस्।`,
-        502
-      );
-    }
-
-    throw new GeminiAssistantError(
-      'AI_FAILED',
-      'AI सहायक हाल अस्थायी रूपमा अनुपलब्ध छ। कृपया म्यानुअल रूपमा उत्पादन विवरण भर्नुहोस्।',
-      502
-    );
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return {
+    data: normalizeAiPayload(parsed, input.globalCategories),
+    model,
+    promptTokens,
+    outputTokens,
+  };
 }
+
+export interface AiCoopPrefillResult {
+  name_ne: string;
+  name_en: string;
+  cooperative_type: string;
+  registration_authority: string;
+  province: string;
+  district: string;
+  municipality: string;
+  tole_address: string;
+  authorized_rep_designation: string;
+  requested_store_name: string;
+  requested_slug: string;
+}
+
+const NEPAL_PROVINCE_DISTRICTS: Record<string, string[]> = {
+  'कोशी प्रदेश': ['इलाम', 'झापा', 'मोरङ', 'सुनसरी', 'धनकुटा', 'ताप्लेजुङ', 'भोजपुर', 'उदयपुर', 'संखुवासभा', 'ओखलढुंगा', 'सोलुखुम्बु', 'खोटाङ', 'तेह्रथुम', 'पाँचथर'],
+  'मधेश प्रदेश': ['पर्सा', 'बारा', 'रौतहट', 'सर्लाही', 'महोत्तरी', 'धनुषा', 'सिरहा', 'सप्तरी'],
+  'बागमती प्रदेश': ['काठमाडौँ', 'ललितपुर', 'भक्तपुर', 'काभ्रेपलाञ्चोक', 'चितवन', 'मकवानपुर', 'धादिङ', 'नुवाकोट', 'सिन्धुपाल्चोक', 'दोलखा', 'रामेछाप', 'सिन्धुली', 'रसुवा'],
+  'गण्डकी प्रदेश': ['कास्की', 'गोरखा', 'लमजुङ', 'तनहुँ', 'स्याङ्जा', 'पर्वत', 'बागलुङ', 'म्याग्दी', 'मुस्ताङ', 'मनाङ', 'नवलपुर'],
+  'लुम्बिनी प्रदेश': ['रुपन्देही', 'पाल्पा', 'गुल्मी', 'अर्घाखाँची', 'कपिलवस्तु', 'दाङ', 'बाँके', 'बर्दिया', 'प्युठान', 'रोल्पा', 'पूर्वी रुकुम', 'परासी'],
+  'कर्णाली प्रदेश': ['सुर्खेत', 'जुम्ला', 'दैलेख', 'सल्यान', 'कालिकोट', 'मुगु', 'डोल्पा', 'हुम्ला', 'जाजरकोट', 'पश्चिम रुकुम'],
+  'सुदूरपश्चिम प्रदेश': ['कैलाली', 'कञ्चनपुर', 'डडेल्धुरा', 'डोटी', 'अछाम', 'बाजुरा', 'बझाङ', 'बैतडी', 'दार्चुला'],
+};
+
+const coopPrefillSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    name_ne: { type: Type.STRING, description: 'Full cooperative name in Nepali Devanagari.' },
+    name_en: { type: Type.STRING, description: 'Full cooperative name in English.' },
+    cooperative_type: {
+      type: Type.STRING,
+      description: 'One of: agriculture, dairy, multipurpose, handicraft, consumer, savings_credit_producer, other.',
+    },
+    registration_authority: { type: Type.STRING, description: 'Likely registration authority in Nepali.' },
+    province: { type: Type.STRING, description: 'Exact Nepali province key if known/inferred, else empty string.' },
+    district: { type: Type.STRING, description: 'Exact Nepali district name inside that province, else empty string.' },
+    municipality: { type: Type.STRING, description: 'Municipality or Rural Municipality name in Nepali if provided/clear, else empty string.' },
+    tole_address: { type: Type.STRING, description: 'Tole/street locality in Nepali if mentioned, else empty string.' },
+    authorized_rep_designation: { type: Type.STRING, description: 'Representative designation in Nepali e.g. अध्यक्ष or व्यवस्थापक.' },
+    requested_store_name: { type: Type.STRING, description: 'Customer-facing store name in Nepali.' },
+    requested_slug: { type: Type.STRING, description: 'Clean URL slug using lowercase a-z, digits, hyphens only.' },
+  },
+  required: [
+    'name_ne',
+    'name_en',
+    'cooperative_type',
+    'registration_authority',
+    'province',
+    'district',
+    'municipality',
+    'tole_address',
+    'authorized_rep_designation',
+    'requested_store_name',
+    'requested_slug',
+  ],
+};
+
+export async function prefillCooperativeRegistrationWithGemini(input: {
+  hint: string;
+  language: 'ne' | 'en';
+}): Promise<AiCoopPrefillResult> {
+  const locationGuide = Object.entries(NEPAL_PROVINCE_DISTRICTS)
+    .map(([p, ds]) => `${p}: ${ds.join(', ')}`)
+    .join('\n');
+
+  const systemInstruction = `You help Nepali cooperatives prefill registration forms accurately from a short user hint (e.g. "Ilam Tea Agriculture Coop Suryodaya" or "सगरमाथा दुग्ध सहकारी काभ्रे").
+RULES:
+- Translate/transliterate faithfully between Nepali Devanagari and English.
+- Pick cooperative_type ONLY from: agriculture, dairy, multipurpose, handicraft, consumer, savings_credit_producer, other.
+- If a district or municipality is mentioned/implied, pick the EXACT Nepali province key and EXACT Nepali district name from this list:\n${locationGuide}
+- If municipality or tole is not mentioned, return empty string "" (never invent fake street numbers or ward numbers).
+- Suggest an appropriate Nepali registration_authority (e.g. स्थानीय तह सहकारी शाखा or डिभिजन सहकारी कार्यालय) and designation (अध्यक्ष / व्यवस्थापक).
+- Produce a clean lowercase hyphenated requested_slug using only a-z, 0-9, hyphens.`;
+
+  const { parsed } = await runStructuredGeminiPrompt<Record<string, unknown>>({
+    systemInstruction,
+    userPrompt: `Preferred UI language: ${input.language}\nCooperative description / hint:\n${input.hint}`,
+    responseSchema: coopPrefillSchema,
+    timeoutMs: 25_000,
+  });
+
+  const allowedTypes = ['agriculture', 'dairy', 'multipurpose', 'handicraft', 'consumer', 'savings_credit_producer', 'other'];
+  const coopType = allowedTypes.includes(String(parsed.cooperative_type || '')) ? String(parsed.cooperative_type) : 'multipurpose';
+
+  const rawProv = String(parsed.province || '').trim();
+  const province = Object.prototype.hasOwnProperty.call(NEPAL_PROVINCE_DISTRICTS, rawProv) ? rawProv : '';
+  const rawDistrict = String(parsed.district || '').trim();
+  const district = province && NEPAL_PROVINCE_DISTRICTS[province].includes(rawDistrict) ? rawDistrict : '';
+
+  const slug = String(parsed.requested_slug || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+
+  return {
+    name_ne: String(parsed.name_ne || '').trim(),
+    name_en: String(parsed.name_en || '').trim(),
+    cooperative_type: coopType,
+    registration_authority: String(parsed.registration_authority || '').trim(),
+    province,
+    district,
+    municipality: String(parsed.municipality || '').trim(),
+    tole_address: String(parsed.tole_address || '').trim(),
+    authorized_rep_designation: String(parsed.authorized_rep_designation || '').trim() || 'अध्यक्ष',
+    requested_store_name: String(parsed.requested_store_name || '').trim(),
+    requested_slug: slug,
+  };
+}
+
+export interface AiStorePrefillResult {
+  store_name_ne: string;
+  store_name_en: string;
+  tagline_ne: string;
+  tagline_en: string;
+  intro_ne: string;
+  intro_en: string;
+  mission_ne: string;
+  mission_en: string;
+  vision_ne: string;
+  vision_en: string;
+  notice_ne: string;
+  notice_en: string;
+  footer_text_ne: string;
+  footer_text_en: string;
+}
+
+const storePrefillSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    store_name_ne: { type: Type.STRING },
+    store_name_en: { type: Type.STRING },
+    tagline_ne: { type: Type.STRING },
+    tagline_en: { type: Type.STRING },
+    intro_ne: { type: Type.STRING },
+    intro_en: { type: Type.STRING },
+    mission_ne: { type: Type.STRING },
+    mission_en: { type: Type.STRING },
+    vision_ne: { type: Type.STRING },
+    vision_en: { type: Type.STRING },
+    notice_ne: { type: Type.STRING },
+    notice_en: { type: Type.STRING },
+    footer_text_ne: { type: Type.STRING },
+    footer_text_en: { type: Type.STRING },
+  },
+  required: [
+    'store_name_ne',
+    'store_name_en',
+    'tagline_ne',
+    'tagline_en',
+    'intro_ne',
+    'intro_en',
+    'mission_ne',
+    'mission_en',
+    'vision_ne',
+    'vision_en',
+    'notice_ne',
+    'notice_en',
+    'footer_text_ne',
+    'footer_text_en',
+  ],
+};
+
+export async function prefillStoreBuilderWithGemini(input: {
+  coopNameNe: string;
+  coopNameEn: string;
+  district: string;
+  cooperativeType: string;
+  hint?: string;
+  language: 'ne' | 'en';
+}): Promise<AiStorePrefillResult> {
+  const systemInstruction = `You write warm, trustworthy, bilingual Nepali & English storefront copy for a registered cooperative store on Sahakari Bazar Nepal.
+Keep taglines under 12 words, intro/mission/vision concise (1-2 sentences each), notice clear and helpful (e.g. ordering & dispatch timing guidance without inventing fake phone numbers or guarantees), and never fabricate certifications or statistics.`;
+
+  const userPrompt = [
+    `Cooperative Name (Nepali): ${input.coopNameNe}`,
+    `Cooperative Name (English): ${input.coopNameEn}`,
+    `District: ${input.district}`,
+    `Cooperative Type: ${input.cooperativeType}`,
+    `Primary UI Language: ${input.language}`,
+    input.hint ? `Cooperative Focus / Hint: ${input.hint}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const { parsed } = await runStructuredGeminiPrompt<Record<string, unknown>>({
+    systemInstruction,
+    userPrompt,
+    responseSchema: storePrefillSchema,
+    timeoutMs: 25_000,
+  });
+
+  return {
+    store_name_ne: String(parsed.store_name_ne || '').trim(),
+    store_name_en: String(parsed.store_name_en || '').trim(),
+    tagline_ne: String(parsed.tagline_ne || '').trim(),
+    tagline_en: String(parsed.tagline_en || '').trim(),
+    intro_ne: String(parsed.intro_ne || '').trim(),
+    intro_en: String(parsed.intro_en || '').trim(),
+    mission_ne: String(parsed.mission_ne || '').trim(),
+    mission_en: String(parsed.mission_en || '').trim(),
+    vision_ne: String(parsed.vision_ne || '').trim(),
+    vision_en: String(parsed.vision_en || '').trim(),
+    notice_ne: String(parsed.notice_ne || '').trim(),
+    notice_en: String(parsed.notice_en || '').trim(),
+    footer_text_ne: String(parsed.footer_text_ne || '').trim(),
+    footer_text_en: String(parsed.footer_text_en || '').trim(),
+  };
+}
+
+export interface AiDashboardDraftResult {
+  code?: string;
+  title_ne?: string;
+  title_en?: string;
+  discount_type?: 'percentage' | 'flat';
+  discount_value?: string;
+  min_order_npr?: string;
+  delivery_instructions_ne?: string;
+  bank_payment_instructions_ne?: string;
+  subject?: string;
+  message?: string;
+}
+
+const dashboardDraftSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    code: { type: Type.STRING, description: 'Uppercase promo coupon code (e.g. TEEJ10) when kind=promotion.' },
+    title_ne: { type: Type.STRING, description: 'Nepali promo campaign title when kind=promotion.' },
+    title_en: { type: Type.STRING, description: 'English promo campaign title when kind=promotion.' },
+    discount_type: { type: Type.STRING, description: 'percentage or flat when kind=promotion.' },
+    discount_value: { type: Type.STRING, description: 'Numeric string e.g. 10 or 150 when kind=promotion.' },
+    min_order_npr: { type: Type.STRING, description: 'Numeric string e.g. 500 when kind=promotion.' },
+    delivery_instructions_ne: { type: Type.STRING, description: 'Clear Nepali delivery & dispatch instructions when kind=delivery.' },
+    bank_payment_instructions_ne: { type: Type.STRING, description: 'Safe template reminder for bank/QR reference upload when kind=delivery (no invented account numbers).' },
+    subject: { type: Type.STRING, description: 'Support ticket subject when kind=support.' },
+    message: { type: Type.STRING, description: 'Clear support ticket message when kind=support.' },
+  },
+};
+
+export async function prefillDashboardDraftWithGemini(input: {
+  kind: 'promotion' | 'delivery' | 'support';
+  hint?: string;
+  coopName: string;
+  district: string;
+  language: 'ne' | 'en';
+}): Promise<AiDashboardDraftResult> {
+  const systemInstruction = `You generate concise, practical cooperative seller drafts for Sahakari Bazar Nepal.
+- Never invent real bank account numbers, phone numbers, or fake order IDs (use clear placeholders like "[खाता नम्बर राख्नुहोस्]" if needed).
+- Tailor strictly to kind="${input.kind}".`;
+
+  const userPrompt = [
+    `Draft Kind: ${input.kind}`,
+    `Cooperative: ${input.coopName} (${input.district})`,
+    `Language Preference: ${input.language}`,
+    input.hint ? `Seller Hint: ${input.hint}` : 'No custom hint given; create a helpful standard cooperative template.',
+  ].join('\n');
+
+  const { parsed } = await runStructuredGeminiPrompt<Record<string, unknown>>({
+    systemInstruction,
+    userPrompt,
+    responseSchema: dashboardDraftSchema,
+    timeoutMs: 25_000,
+  });
+
+  return {
+    code: parsed.code ? String(parsed.code).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 16) : undefined,
+    title_ne: parsed.title_ne ? String(parsed.title_ne).trim() : undefined,
+    title_en: parsed.title_en ? String(parsed.title_en).trim() : undefined,
+    discount_type: parsed.discount_type === 'flat' ? 'flat' : 'percentage',
+    discount_value: parsed.discount_value ? String(parsed.discount_value).replace(/[^0-9.]/g, '') : undefined,
+    min_order_npr: parsed.min_order_npr ? String(parsed.min_order_npr).replace(/[^0-9.]/g, '') : undefined,
+    delivery_instructions_ne: parsed.delivery_instructions_ne ? String(parsed.delivery_instructions_ne).trim() : undefined,
+    bank_payment_instructions_ne: parsed.bank_payment_instructions_ne ? String(parsed.bank_payment_instructions_ne).trim() : undefined,
+    subject: parsed.subject ? String(parsed.subject).trim() : undefined,
+    message: parsed.message ? String(parsed.message).trim() : undefined,
+  };
+}
+

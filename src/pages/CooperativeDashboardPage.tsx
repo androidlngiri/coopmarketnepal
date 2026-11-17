@@ -45,6 +45,7 @@ import {
   type ProductRichFormFields,
 } from '../components/coop/ProductRichFieldsEditor';
 import type { ProductAiDetails } from '../components/ProductCard';
+import { NotificationBell } from '../components/NotificationBell';
 import { toast } from 'sonner';
 
 type CoopTab =
@@ -61,11 +62,35 @@ type CoopTab =
   | 'billing'
   | 'support';
 
+const COOP_TAB_ALIASES: Record<string, CoopTab> = {
+  overview: 'overview',
+  store: 'store_builder',
+  store_builder: 'store_builder',
+  products: 'products',
+  inventory: 'inventory',
+  orders: 'orders',
+  customers: 'customers',
+  reports: 'reports',
+  promotions: 'promotions',
+  delivery: 'delivery',
+  staff: 'staff',
+  billing: 'billing',
+  support: 'support',
+};
+
+function resolveCoopTabFromUrl(): CoopTab {
+  const param = (new URLSearchParams(window.location.search).get('tab') || '').toLowerCase();
+  return COOP_TAB_ALIASES[param] || 'overview';
+}
+
 export function CooperativeDashboardPage() {
-  const { lang, user, logout, navigate, refreshSession } = useApp();
-  const [tab, setTab] = useState<CoopTab>('overview');
+  const { lang, user, logout, navigate, refreshSession, currentPath } = useApp();
+  const [tab, setTab] = useState<CoopTab>(() => resolveCoopTabFromUrl());
   const [overview, setOverview] = useState<Record<string, unknown> | null>(null);
   const [otpInput, setOtpInput] = useState('');
+  const [aiStoreHint, setAiStoreHint] = useState('');
+  const [aiStoreLoading, setAiStoreLoading] = useState(false);
+  const [aiQuickLoading, setAiQuickLoading] = useState<'promotion' | 'delivery' | 'support' | null>(null);
 
   // Store Builder state
   const [storeForm, setStoreForm] = useState<Record<string, unknown> | null>(null);
@@ -212,6 +237,10 @@ export function CooperativeDashboardPage() {
     const r = await apiFetch<{ orders: Array<Record<string, unknown>> }>(`/api/coop-dashboard/orders${qs}`);
     if (r.ok) setOrders(r.data.orders);
   };
+
+  useEffect(() => {
+    setTab(resolveCoopTabFromUrl());
+  }, [currentPath]);
 
   useEffect(() => {
     if (user && (user.role === 'cooperative_admin' || user.role === 'cooperative_staff')) {
@@ -363,6 +392,120 @@ export function CooperativeDashboardPage() {
   const lowStockItems = (overview?.lowStockItems as Array<Record<string, unknown>>) || [];
   const recentOrders = (overview?.recentOrders as Array<Record<string, unknown>>) || [];
   const dailySales = (overview?.dailySales as Array<{ day: string; revenue: number; order_count: number }>) || [];
+  const salesMeta = overview?.salesMeta as
+    | { last14DaysRevenue?: number; last14DaysOrders?: number; olderOrdersCount?: number }
+    | undefined;
+
+  const handleAiPrefillStore = async () => {
+    setAiStoreLoading(true);
+    const res = await apiFetch<{
+      prefill: {
+        store_name_ne: string;
+        store_name_en: string;
+        tagline_ne: string;
+        tagline_en: string;
+        intro_ne: string;
+        intro_en: string;
+        mission_ne: string;
+        mission_en: string;
+        vision_ne: string;
+        vision_en: string;
+        notice_ne: string;
+        notice_en: string;
+        footer_text_ne: string;
+        footer_text_en: string;
+      };
+    }>('/api/coop-dashboard/store/ai-prefill', {
+      method: 'POST',
+      body: JSON.stringify({ hint: aiStoreHint.trim(), language: lang }),
+    });
+    setAiStoreLoading(false);
+    if (!res.ok) {
+      toast.error(res.error || 'AI स्टोर विवरण तयार पार्न सकिएन।');
+      return;
+    }
+    const p = res.data.prefill;
+    setStoreForm((prev) =>
+      prev
+        ? {
+            ...prev,
+            store_name_ne: p.store_name_ne || prev.store_name_ne,
+            store_name_en: p.store_name_en || prev.store_name_en,
+            tagline_ne: p.tagline_ne || prev.tagline_ne,
+            tagline_en: p.tagline_en || prev.tagline_en,
+            intro_ne: p.intro_ne || prev.intro_ne,
+            intro_en: p.intro_en || prev.intro_en,
+            mission_ne: p.mission_ne || prev.mission_ne,
+            mission_en: p.mission_en || prev.mission_en,
+            vision_ne: p.vision_ne || prev.vision_ne,
+            vision_en: p.vision_en || prev.vision_en,
+            notice_ne: p.notice_ne || prev.notice_ne,
+            notice_en: p.notice_en || prev.notice_en,
+            footer_text_ne: p.footer_text_ne || prev.footer_text_ne,
+            footer_text_en: p.footer_text_en || prev.footer_text_en,
+          }
+        : prev
+    );
+    toast.success(
+      lang === 'ne'
+        ? 'AI बाट पसल विवरण तयार भयो! समीक्षा गरी सुरक्षित गर्नुहोस्।'
+        : 'Store details prefilled with AI! Review and save.'
+    );
+  };
+
+  const handleAiQuickFill = async (kind: 'promotion' | 'delivery' | 'support', hint = '') => {
+    setAiQuickLoading(kind);
+    const res = await apiFetch<{
+      draft: {
+        code?: string;
+        title_ne?: string;
+        discount_type?: 'percentage' | 'flat';
+        discount_value?: string;
+        min_order_npr?: string;
+        delivery_instructions_ne?: string;
+        bank_payment_instructions_ne?: string;
+        subject?: string;
+        message?: string;
+      };
+    }>('/api/coop-dashboard/ai-quick-fill', {
+      method: 'POST',
+      body: JSON.stringify({ kind, hint, language: lang }),
+    });
+    setAiQuickLoading(null);
+    if (!res.ok) {
+      toast.error(res.error || 'AI ड्राफ्ट तयार पार्न सकिएन।');
+      return;
+    }
+    const d = res.data.draft;
+    if (kind === 'promotion') {
+      setNewPromo((prev) => ({
+        ...prev,
+        code: d.code || prev.code,
+        titleNe: d.title_ne || prev.titleNe,
+        discountType: d.discount_type || prev.discountType,
+        discountValue: d.discount_value || prev.discountValue,
+        minOrderNpr: d.min_order_npr || prev.minOrderNpr,
+      }));
+      toast.success(lang === 'ne' ? 'AI कूपन ड्राफ्ट भरियो!' : 'Promo draft prefilled with AI!');
+    } else if (kind === 'delivery') {
+      setDeliveryConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              delivery_instructions_ne: d.delivery_instructions_ne || prev.delivery_instructions_ne,
+              bank_payment_instructions_ne: d.bank_payment_instructions_ne || prev.bank_payment_instructions_ne,
+            }
+          : prev
+      );
+      toast.success(lang === 'ne' ? 'AI डेलिभरी र भुक्तानी निर्देशन तयार भयो!' : 'Delivery instructions prefilled!');
+    } else if (kind === 'support') {
+      setNewTicket((prev) => ({
+        subject: d.subject || prev.subject,
+        message: d.message || prev.message,
+      }));
+      toast.success(lang === 'ne' ? 'AI टिकट ड्राफ्ट भरियो!' : 'Support ticket draft prefilled!');
+    }
+  };
 
   const handleVerifyCoopOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -702,26 +845,29 @@ export function CooperativeDashboardPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* Left Sidebar (240px desktop feel) */}
       <aside className="lg:col-span-3 bg-white border border-[#E5E2DC] rounded-xl p-4 space-y-4">
-        <div className="pb-3 border-b border-[#E5E2DC] flex items-center gap-3">
-          <div className="w-11 h-11 rounded-lg border border-[#E5E2DC] bg-white overflow-hidden shrink-0">
-            <SafeImage
-              src={String(coopStore?.logo_url || coop?.logo_url || '')}
-              alt={coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : 'Store Logo'}
-              variant="store"
-              compact
-              lang={lang}
-              className="w-full h-full object-cover"
-            />
+        <div className="pb-3 border-b border-[#E5E2DC] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-lg border border-[#E5E2DC] bg-white overflow-hidden shrink-0">
+              <SafeImage
+                src={String(coopStore?.logo_url || coop?.logo_url || '')}
+                alt={coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : 'Store Logo'}
+                variant="store"
+                compact
+                lang={lang}
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] text-[#78716C]">{lang === 'ne' ? 'सहकारी पसल' : 'Cooperative Tenant'}</p>
+              <p className="font-semibold text-sm text-[#0F172A] truncate">
+                {coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : '...'}
+              </p>
+              <p className="text-xs mt-0.5 font-medium text-[#15803D]">
+                {coop ? labelFor(STATUS_LABELS, String(coop.status), lang) : ''}
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="text-[11px] text-[#78716C]">{lang === 'ne' ? 'सहकारी पसल' : 'Cooperative Tenant'}</p>
-            <p className="font-semibold text-sm text-[#0F172A] truncate">
-              {coop ? (lang === 'ne' ? String(coop.name_ne) : String(coop.name_en)) : '...'}
-            </p>
-            <p className="text-xs mt-0.5 font-medium text-[#15803D]">
-              {coop ? labelFor(STATUS_LABELS, String(coop.status), lang) : ''}
-            </p>
-          </div>
+          <NotificationBell compact />
         </div>
 
         <nav className="space-y-1">
@@ -858,29 +1004,69 @@ export function CooperativeDashboardPage() {
             {/* 14-day sales chart + Plan summary */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-white border border-[#E5E2DC] rounded-xl p-5 space-y-4">
-                <h2 className="font-semibold text-sm text-[#0F172A]">
-                  {lang === 'ne' ? 'पछिल्लो १४ दिनको बिक्री विवरण' : '14-Day Sales Trend'}
-                </h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-semibold text-sm text-[#0F172A]">
+                      {lang === 'ne' ? 'पछिल्लो १४ दिनको बिक्री विवरण' : '14-Day Sales Trend'}
+                    </h2>
+                    <p className="text-[11px] text-[#78716C]">
+                      {lang === 'ne'
+                        ? 'नेपाल समय (Asia/Kathmandu) अनुसार दैनिक कारोबार'
+                        : 'Daily order revenue in Nepal Time (Asia/Kathmandu)'}
+                    </p>
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <p className="text-xs font-bold text-[#0F172A]">
+                      {formatNPR(salesMeta?.last14DaysRevenue ?? dailySales.reduce((a, b) => a + b.revenue, 0), lang)}
+                    </p>
+                    <p className="text-[11px] text-[#57534E]">
+                      {lang === 'ne'
+                        ? `${toNepaliDigits(salesMeta?.last14DaysOrders ?? dailySales.reduce((a, b) => a + b.order_count, 0))} अर्डर (१४ दिन)`
+                        : `${salesMeta?.last14DaysOrders ?? dailySales.reduce((a, b) => a + b.order_count, 0)} order(s) (14d)`}
+                    </p>
+                  </div>
+                </div>
+
                 {dailySales.length === 0 ? (
                   <p className="text-xs text-[#78716C] py-8 text-center">
                     {lang === 'ne' ? 'अहिलेसम्म बिक्री डाटा छैन।' : 'No sales recorded in the last 14 days.'}
                   </p>
                 ) : (
-                  <div className="flex items-end gap-2 h-36 pt-4">
-                    {dailySales.map((d) => {
-                      const maxRev = Math.max(...dailySales.map((x) => x.revenue), 1);
-                      const heightPct = Math.max(8, Math.round((d.revenue / maxRev) * 100));
-                      return (
-                        <div key={d.day} className="flex-1 flex flex-col items-center gap-1">
-                          <div
-                            className="w-full bg-[#B91C1C] rounded-t"
-                            style={{ height: `${heightPct}%` }}
-                            title={`${d.day}: ${formatNPR(d.revenue, lang)}`}
-                          />
-                          <span className="text-[10px] text-[#78716C] font-mono">{d.day.slice(5)}</span>
-                        </div>
-                      );
-                    })}
+                  <div className="space-y-2">
+                    <div className="flex items-end gap-1.5 sm:gap-2 h-36 pt-4">
+                      {dailySales.map((d) => {
+                        const maxRev = Math.max(...dailySales.map((x) => x.revenue), 1);
+                        const hasActivity = d.revenue > 0 || d.order_count > 0;
+                        const heightPct = hasActivity ? Math.max(12, Math.round((d.revenue / maxRev) * 100)) : 4;
+                        return (
+                          <div key={d.day} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+                            <div className="w-full flex-1 flex items-end">
+                              <div
+                                className={`w-full rounded-t transition-colors ${
+                                  hasActivity ? 'bg-[#B91C1C] hover:bg-[#991B1B]' : 'bg-[#E5E2DC]'
+                                }`}
+                                style={{ height: `${heightPct}%` }}
+                                title={`${d.day}: ${formatNPR(d.revenue, lang)} (${d.order_count} orders)`}
+                              />
+                            </div>
+                            <span className="text-[9px] sm:text-[10px] text-[#78716C] font-mono truncate">
+                              {d.day.slice(5)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {(salesMeta?.last14DaysOrders ?? dailySales.reduce((a, b) => a + b.order_count, 0)) === 0 && (
+                      <p className="text-[11px] text-[#57534E] bg-[#FAF9F6] border border-[#E5E2DC] rounded-lg px-3 py-2">
+                        {(salesMeta?.olderOrdersCount || 0) > 0
+                          ? lang === 'ne'
+                            ? `पछिल्लो १४ दिनमा नयाँ अर्डर छैन (पहिलेका ${toNepaliDigits(salesMeta?.olderOrdersCount || 0)} अर्डरहरू "बिक्री प्रतिवेदन" ट्याबमा उपलब्ध छन्)।`
+                            : `No orders in the past 14 days (${salesMeta?.olderOrdersCount} older order(s) are available in Sales Reports).`
+                          : lang === 'ne'
+                          ? 'अहिलेसम्म ग्राहकबाट अर्डर आएको छैन — उत्पादन प्रकाशित भएपछि यहाँ दैनिक बिक्री देखिनेछ।'
+                          : 'No customer orders placed yet — daily revenue bars will populate automatically as orders arrive.'}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -1018,6 +1204,33 @@ export function CooperativeDashboardPage() {
                 )}
               </div>
             )}
+
+            <div className="rounded-xl border border-[#B91C1C]/20 bg-[#FAF9F6] p-3.5 flex flex-col sm:flex-row sm:items-center gap-2.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#0F172A] shrink-0">
+                <Sparkles className="w-4 h-4 text-[#B91C1C]" />
+                <span>{lang === 'ne' ? 'AI बाट पसल विवरण भर्नुहोस्:' : 'AI Store Prefill:'}</span>
+              </div>
+              <Input
+                value={aiStoreHint}
+                onChange={(e) => setAiStoreHint(e.target.value)}
+                placeholder={
+                  lang === 'ne'
+                    ? 'संक्षिप्त विषय (जस्तै: शुद्ध अर्गानिक चिया र अलैँची उत्पादन)'
+                    : 'Optional focus (e.g. Organic highland tea & spices)'
+                }
+                className="bg-white h-9 text-xs flex-1"
+              />
+              <Button type="button" size="sm" variant="secondary" disabled={aiStoreLoading} onClick={handleAiPrefillStore}>
+                <Sparkles className="w-3.5 h-3.5" />
+                {aiStoreLoading
+                  ? lang === 'ne'
+                    ? 'तयार हुँदैछ...'
+                    : 'Generating...'
+                  : lang === 'ne'
+                  ? 'पसल विवरण स्वतः भर्नुहोस्'
+                  : 'Auto-Fill Store Profile'}
+              </Button>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -2384,35 +2597,58 @@ export function CooperativeDashboardPage() {
                 const r = await apiFetch<{ promotions: Array<Record<string, unknown>> }>('/api/coop-dashboard/promotions');
                 if (r.ok) setPromotions(r.data.promotions);
               }}
-              className="bg-white border border-[#E5E2DC] rounded-xl p-5 grid grid-cols-1 sm:grid-cols-5 gap-3"
+              className="bg-white border border-[#E5E2DC] rounded-xl p-5 space-y-3"
             >
-              <Input
-                required
-                placeholder="CODE (e.g. DASHAIN10)"
-                value={newPromo.code}
-                onChange={(e) => setNewPromo({ ...newPromo, code: e.target.value })}
-              />
-              <Input
-                required
-                placeholder={lang === 'ne' ? 'शीर्षक' : 'Title'}
-                value={newPromo.titleNe}
-                onChange={(e) => setNewPromo({ ...newPromo, titleNe: e.target.value })}
-              />
-              <Select
-                value={newPromo.discountType}
-                onChange={(e) => setNewPromo({ ...newPromo, discountType: e.target.value })}
-              >
-                <option value="percentage">%</option>
-                <option value="flat">NPR Flat</option>
-              </Select>
-              <Input
-                required
-                type="number"
-                placeholder="Value"
-                value={newPromo.discountValue}
-                onChange={(e) => setNewPromo({ ...newPromo, discountValue: e.target.value })}
-              />
-              <Button type="submit">{lang === 'ne' ? 'कूपन थप्नुहोस्' : 'Add Coupon'}</Button>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-semibold text-sm text-[#0F172A]">
+                  {lang === 'ne' ? 'नयाँ छुट कूपन सिर्जना गर्नुहोस्' : 'Create Promotion Coupon'}
+                </h2>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={aiQuickLoading === 'promotion'}
+                  onClick={() => handleAiQuickFill('promotion', newPromo.titleNe)}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-[#B91C1C]" />
+                  {aiQuickLoading === 'promotion'
+                    ? lang === 'ne'
+                      ? 'भर्दैछ...'
+                      : 'Drafting...'
+                    : lang === 'ne'
+                    ? 'AI कूपन ड्राफ्ट'
+                    : 'AI Suggest Coupon'}
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+                <Input
+                  required
+                  placeholder="CODE (e.g. DASHAIN10)"
+                  value={newPromo.code}
+                  onChange={(e) => setNewPromo({ ...newPromo, code: e.target.value })}
+                />
+                <Input
+                  required
+                  placeholder={lang === 'ne' ? 'शीर्षक' : 'Title'}
+                  value={newPromo.titleNe}
+                  onChange={(e) => setNewPromo({ ...newPromo, titleNe: e.target.value })}
+                />
+                <Select
+                  value={newPromo.discountType}
+                  onChange={(e) => setNewPromo({ ...newPromo, discountType: e.target.value })}
+                >
+                  <option value="percentage">%</option>
+                  <option value="flat">NPR Flat</option>
+                </Select>
+                <Input
+                  required
+                  type="number"
+                  placeholder="Value"
+                  value={newPromo.discountValue}
+                  onChange={(e) => setNewPromo({ ...newPromo, discountValue: e.target.value })}
+                />
+                <Button type="submit">{lang === 'ne' ? 'कूपन थप्नुहोस्' : 'Add Coupon'}</Button>
+              </div>
             </form>
 
             <div className="bg-white border border-[#E5E2DC] rounded-xl divide-y divide-[#F3F1EC]">
@@ -2454,7 +2690,27 @@ export function CooperativeDashboardPage() {
             }}
             className="bg-white border border-[#E5E2DC] rounded-xl p-6 space-y-4"
           >
-            <h2 className="font-semibold text-base">{lang === 'ne' ? 'डेलिभरी तथा भुक्तानी निर्देशन' : 'Delivery & Bank Instructions'}</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-semibold text-base">
+                {lang === 'ne' ? 'डेलिभरी तथा भुक्तानी निर्देशन' : 'Delivery & Bank Instructions'}
+              </h2>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={aiQuickLoading === 'delivery'}
+                onClick={() => handleAiQuickFill('delivery')}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#B91C1C]" />
+                {aiQuickLoading === 'delivery'
+                  ? lang === 'ne'
+                    ? 'भर्दैछ...'
+                    : 'Drafting...'
+                  : lang === 'ne'
+                  ? 'AI बाट निर्देशन लेख्नुहोस्'
+                  : 'AI Draft Instructions'}
+              </Button>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1">{lang === 'ne' ? 'सामान्य शुल्क (रु.)' : 'Default Fee'}</label>
@@ -2779,7 +3035,25 @@ export function CooperativeDashboardPage() {
               }}
               className="bg-white border border-[#E5E2DC] rounded-xl p-5 space-y-3"
             >
-              <h3 className="font-semibold text-sm">{lang === 'ne' ? 'प्लेटफर्म सहायता टिकट' : 'Platform Support Ticket'}</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-semibold text-sm">{lang === 'ne' ? 'प्लेटफर्म सहायता टिकट' : 'Platform Support Ticket'}</h3>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={aiQuickLoading === 'support'}
+                  onClick={() => handleAiQuickFill('support', newTicket.subject || newTicket.message)}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-[#B91C1C]" />
+                  {aiQuickLoading === 'support'
+                    ? lang === 'ne'
+                      ? 'भर्दैछ...'
+                      : 'Drafting...'
+                    : lang === 'ne'
+                    ? 'AI टिकट ड्राफ्ट'
+                    : 'AI Draft Ticket'}
+                </Button>
+              </div>
               <Input
                 required
                 placeholder={lang === 'ne' ? 'विषय' : 'Subject'}

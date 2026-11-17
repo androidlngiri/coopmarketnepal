@@ -156,14 +156,33 @@ adminRouter.post('/cooperatives/:id/decision', async (req, res) => {
     return res.status(error.message.includes('फेला परेन') ? 404 : 400).json({ error: error.message });
   }
 
-  const coopInfo = (data || {}) as { contact_phone?: string; name_ne?: string };
+  const coopInfo = (data || {}) as { contact_phone?: string; name_ne?: string; name_en?: string };
+  const cleanCoopEn = String(coopInfo.name_en || coopInfo.name_ne || 'Cooperative').trim();
+  const cleanCoopNe = String(coopInfo.name_ne || coopInfo.name_en || 'सहकारी').trim();
+
+  await sb.from('notifications').insert({
+    cooperative_id: req.params.id,
+    type: `cooperative_${status}`,
+    title_ne: status === 'approved' ? 'बधाई छ! सहकारी स्वीकृत भयो' : 'सहकारी खाता स्थिति अद्यावधिक',
+    title_en: status === 'approved' ? 'Congratulations! Cooperative Approved' : 'Cooperative Status Updated',
+    body_ne:
+      status === 'approved'
+        ? `तपाईंको सहकारी "${cleanCoopNe}" स्वीकृत भएको छ। अब उत्पादन र पसल प्रकाशित गर्न सक्नुहुन्छ।`
+        : `तपाईंको सहकारी स्थिति "${status}" मा अद्यावधिक गरिएको छ।${reason ? ` कारण: ${reason}` : ''}`,
+    body_en:
+      status === 'approved'
+        ? `"${cleanCoopEn}" is approved! You can now publish your store and products.`
+        : `Your cooperative status was updated to "${status}".${reason ? ` Reason: ${reason}` : ''}`,
+    action_url: '/cooperative?tab=overview',
+  });
+
   if (coopInfo.contact_phone) {
     await sendAkashSms({
       to: coopInfo.contact_phone,
       text:
         status === 'approved'
-          ? `बधाई छ! तपाईंको सहकारी "${coopInfo.name_ne}" सहकारी बजारमा स्वीकृत र प्रकाशित भएको छ।`
-          : `सहकारी बजार सूचना: तपाईंको सहकारी स्थिति "${status}" मा अद्यावधिक गरिएको छ।`,
+          ? `Congrats! Coop ${cleanCoopEn} is approved & live on Sahakari Bazar.`
+          : `Sahakari Bazar: Coop ${cleanCoopEn} status updated to ${status}.`,
       purpose: 'cooperative_decision',
       cooperativeId: req.params.id,
     });
@@ -487,10 +506,24 @@ adminRouter.post('/tickets/:id/reply', async (req, res) => {
     sender_role: 'super_admin',
     message,
   });
-  await sb
+  const { data: ticketRow } = await sb
     .from('support_tickets')
     .update({ status: status || 'in_progress', updated_at: new Date().toISOString() })
-    .eq('id', req.params.id);
+    .eq('id', req.params.id)
+    .select('cooperative_id, subject')
+    .maybeSingle();
+
+  if (ticketRow?.cooperative_id) {
+    await sb.from('notifications').insert({
+      cooperative_id: ticketRow.cooperative_id,
+      type: 'support_reply',
+      title_ne: 'सहायता टिकटमा सुपर एडमिनको जवाफ',
+      title_en: 'New Reply on Support Ticket',
+      body_ne: `विषय "${String(ticketRow.subject || '')}" मा जवाफ आएको छ।`,
+      body_en: `Super Admin replied to "${String(ticketRow.subject || '')}".`,
+      action_url: '/cooperative?tab=support',
+    });
+  }
 
   res.json({ ok: true });
 });
@@ -518,7 +551,7 @@ adminRouter.post('/test-sms', async (req, res) => {
   if (!phone) return res.status(400).json({ error: 'परीक्षण मोबाइल नम्बर आवश्यक छ।' });
   const result = await sendAkashSms({
     to: String(phone),
-    text: String(message || 'सहकारी बजार: Akash SMS जडान परीक्षण सफल।'),
+    text: String(message || 'Sahakari Bazar: Akash SMS connection test successful.'),
     purpose: 'admin_test_sms',
   });
   res.status(result.sent ? 200 : 400).json(result);

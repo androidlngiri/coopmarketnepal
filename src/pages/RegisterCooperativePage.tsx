@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, Info, LogIn, ShieldCheck, Store, Upload } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Info, LogIn, ShieldCheck, Sparkles, Store, Upload } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { adStringToBsString, bsStringToAdString, formatDateBS, NEPAL_PROVINCES, parseBsDateInput } from '../lib/bs-date';
@@ -16,6 +16,8 @@ export function RegisterCooperativePage() {
   const [otpSending, setOtpSending] = useState(false);
   const [otpNotice, setOtpNotice] = useState('');
   const [duplicateUpgradePrompt, setDuplicateUpgradePrompt] = useState<string | null>(null);
+  const [aiHint, setAiHint] = useState('');
+  const [aiPrefilling, setAiPrefilling] = useState(false);
 
   const isBuyerUpgrade = user?.role === 'buyer';
   const isExistingCoopOrAdmin = Boolean(user && user.role !== 'buyer');
@@ -100,6 +102,62 @@ export function RegisterCooperativePage() {
     } else {
       toast.success(lang === 'ne' ? 'Akash SMS मार्फत OTP पठाइयो।' : 'OTP sent via Akash SMS.');
     }
+  };
+
+  const handleAiPrefillCoop = async () => {
+    const cleanHint = aiHint.trim() || form.nameNe.trim() || form.nameEn.trim();
+    if (cleanHint.length < 3) {
+      toast.error(
+        lang === 'ne'
+          ? 'कृपया कम्तीमा सहकारीको नाम र जिल्ला लेख्नुहोस् (जस्तै: सूर्योदय कृषि सहकारी, इलाम)।'
+          : 'Enter your cooperative name and district (e.g. Suryodaya Agro Coop, Ilam).'
+      );
+      return;
+    }
+    setAiPrefilling(true);
+    const res = await apiFetch<{
+      prefill: {
+        name_ne: string;
+        name_en: string;
+        cooperative_type: string;
+        registration_authority: string;
+        province: string;
+        district: string;
+        municipality: string;
+        tole_address: string;
+        authorized_rep_designation: string;
+        requested_store_name: string;
+        requested_slug: string;
+      };
+    }>('/api/cooperatives/ai-prefill', {
+      method: 'POST',
+      body: JSON.stringify({ hint: cleanHint, language: lang }),
+    });
+    setAiPrefilling(false);
+    if (!res.ok) {
+      toast.error(res.error || 'AI प्रिफिल असफल भयो।');
+      return;
+    }
+    const p = res.data.prefill;
+    setForm((prev) => ({
+      ...prev,
+      nameNe: p.name_ne || prev.nameNe,
+      nameEn: p.name_en || prev.nameEn,
+      cooperativeType: p.cooperative_type || prev.cooperativeType,
+      registrationAuthority: p.registration_authority || prev.registrationAuthority,
+      ...(p.province ? { province: p.province } : {}),
+      ...(p.district ? { district: p.district } : {}),
+      municipality: p.municipality || prev.municipality,
+      toleAddress: p.tole_address || prev.toleAddress,
+      authorizedRepDesignation: p.authorized_rep_designation || prev.authorizedRepDesignation,
+      requestedStoreName: p.requested_store_name || prev.requestedStoreName,
+      requestedSlug: p.requested_slug || prev.requestedSlug,
+    }));
+    toast.success(
+      lang === 'ne'
+        ? 'AI बाट चरण १, २ र ३ का विवरण स्वतः भरिए! कृपया एकपटक जाँच गर्नुहोस्।'
+        : 'AI prefilled fields across Steps 1–3! Please verify before submitting.'
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -278,6 +336,50 @@ export function RegisterCooperativePage() {
       <form onSubmit={handleSubmit} className="bg-white border border-[#E5E2DC] rounded-xl p-6 sm:p-8 space-y-6">
         {step === 1 && (
           <div className="space-y-4">
+            <div className="rounded-xl border border-[#B91C1C]/20 bg-[#FAF9F6] p-3.5 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-[#0F172A]">
+                  <Sparkles className="w-4 h-4 text-[#B91C1C]" />
+                  <span>
+                    {lang === 'ne'
+                      ? 'छिटो दर्ता: AI बाट फारम स्वतः भर्नुहोस् (AI Smart Prefill)'
+                      : 'Fast Track: Auto-Fill Form with AI'}
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#78716C]">
+                  {lang === 'ne' ? 'नेपाली + अंग्रेजी एकैसाथ भरिन्छ' : 'Auto-fills Nepali, English, Province & Slug'}
+                </span>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={aiHint}
+                  onChange={(e) => setAiHint(e.target.value)}
+                  placeholder={
+                    lang === 'ne'
+                      ? 'जस्तै: "इलाम सूर्योदय चिया कृषि सहकारी संस्था, फिक्कल"'
+                      : 'e.g. "Suryodaya Tea Agriculture Coop, Fikkal, Ilam"'
+                  }
+                  className="bg-white flex-1"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={aiPrefilling}
+                  onClick={handleAiPrefillCoop}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  {aiPrefilling
+                    ? lang === 'ne'
+                      ? 'AI भर्दैछ...'
+                      : 'Prefilling...'
+                    : lang === 'ne'
+                    ? 'AI बाट भर्नुहोस्'
+                    : 'AI Prefill'}
+                </Button>
+              </div>
+            </div>
+
             <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] px-3 py-2 text-xs text-[#57534E]">
               {lang === 'ne'
                 ? 'सुझाव: नेपाली लेख्ने बक्सहरूमा किबोर्ड भाषा नबदली सिधै अंग्रेजीमा लेख्नुहोस् (जस्तै: sahakari + Space) — स्वतः नेपाली बन्नेछ।'
