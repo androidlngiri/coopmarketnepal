@@ -259,6 +259,19 @@ export function formatDateBS(dateInput: string | Date, lang: 'ne' | 'en' = 'ne')
   return `${bs.year} ${BS_MONTHS_EN[bs.month - 1]} ${bs.day} BS`;
 }
 
+export function formatDateTimeBS(dateInput: string | Date, lang: 'ne' | 'en' = 'ne'): string {
+  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
+  if (Number.isNaN(d.getTime())) return String(dateInput || '—');
+  const datePart = formatDateBS(d, lang);
+  const timePart = d.toLocaleTimeString('en-US', {
+    timeZone: 'Asia/Kathmandu',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+  return lang === 'ne' ? `${datePart} · ${toNepaliDigits(timePart)}` : `${datePart} · ${timePart}`;
+}
+
 export const NEPAL_PROVINCES: Record<string, { ne: string; en: string; districts: string[] }> = {
   'कोशी प्रदेश': {
     ne: 'कोशी प्रदेश',

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, Info, LogIn, ShieldCheck, Sparkles, Store, Upload } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ExternalLink, Globe, Info, LogIn, ShieldCheck, Sparkles, Store, Upload } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
 import { adStringToBsString, bsStringToAdString, formatDateBS, NEPAL_PROVINCES, parseBsDateInput } from '../lib/bs-date';
@@ -18,6 +18,10 @@ export function RegisterCooperativePage() {
   const [duplicateUpgradePrompt, setDuplicateUpgradePrompt] = useState<string | null>(null);
   const [aiHint, setAiHint] = useState('');
   const [aiPrefilling, setAiPrefilling] = useState(false);
+  const [aiResearchInfo, setAiResearchInfo] = useState<{
+    summary: string;
+    sources: Array<{ title: string; url: string }>;
+  } | null>(null);
 
   const isBuyerUpgrade = user?.role === 'buyer';
   const isExistingCoopOrAdmin = Boolean(user && user.role !== 'buyer');
@@ -109,25 +113,36 @@ export function RegisterCooperativePage() {
     if (cleanHint.length < 3) {
       toast.error(
         lang === 'ne'
-          ? 'कृपया कम्तीमा सहकारीको नाम र जिल्ला लेख्नुहोस् (जस्तै: सूर्योदय कृषि सहकारी, इलाम)।'
-          : 'Enter your cooperative name and district (e.g. Suryodaya Agro Coop, Ilam).'
+          ? 'कृपया कम्तीमा सहकारीको नाम र जिल्ला लेख्नुहोस् (जस्तै: सुनौलो महिला बहुउद्देश्यीय सहकारी, बर्दिया)।'
+          : 'Enter your cooperative name and district (e.g. Sunaulo Mahila Bahudeshya Sahakari Sanstha Bardiya).'
       );
       return;
     }
     setAiPrefilling(true);
+    setAiResearchInfo(null);
     const res = await apiFetch<{
       prefill: {
         name_ne: string;
         name_en: string;
-        cooperative_type: string;
+        registration_number: string;
         registration_authority: string;
+        registration_date_ad: string;
+        registration_date_bs: string;
+        cooperative_type: string;
+        pan_vat_number: string;
         province: string;
         district: string;
         municipality: string;
+        ward_number: string;
         tole_address: string;
+        contact_email: string;
+        contact_phone: string;
+        authorized_rep_name: string;
         authorized_rep_designation: string;
         requested_store_name: string;
         requested_slug: string;
+        research_summary: string;
+        sources: Array<{ title: string; url: string }>;
       };
     }>('/api/cooperatives/ai-prefill', {
       method: 'POST',
@@ -139,24 +154,67 @@ export function RegisterCooperativePage() {
       return;
     }
     const p = res.data.prefill;
-    setForm((prev) => ({
-      ...prev,
-      nameNe: p.name_ne || prev.nameNe,
-      nameEn: p.name_en || prev.nameEn,
-      cooperativeType: p.cooperative_type || prev.cooperativeType,
-      registrationAuthority: p.registration_authority || prev.registrationAuthority,
-      ...(p.province ? { province: p.province } : {}),
-      ...(p.district ? { district: p.district } : {}),
-      municipality: p.municipality || prev.municipality,
-      toleAddress: p.tole_address || prev.toleAddress,
-      authorizedRepDesignation: p.authorized_rep_designation || prev.authorizedRepDesignation,
-      requestedStoreName: p.requested_store_name || prev.requestedStoreName,
-      requestedSlug: p.requested_slug || prev.requestedSlug,
-    }));
+
+    let syncedAd = '';
+    let syncedBs = '';
+    if (p.registration_date_ad) {
+      syncedAd = p.registration_date_ad;
+      syncedBs = p.registration_date_bs
+        ? adStringToBsString(p.registration_date_ad, true) || p.registration_date_bs
+        : adStringToBsString(p.registration_date_ad, true) || '';
+    } else if (p.registration_date_bs) {
+      const convertedAd = bsStringToAdString(p.registration_date_bs);
+      if (convertedAd) {
+        syncedAd = convertedAd;
+        syncedBs = adStringToBsString(convertedAd, true) || p.registration_date_bs;
+      } else {
+        syncedBs = p.registration_date_bs;
+      }
+    }
+
+    setForm((prev) => {
+      const nextProvince = p.province || prev.province;
+      const nextDistrict =
+        p.district ||
+        (p.province && p.province !== prev.province
+          ? NEPAL_PROVINCES[p.province]?.districts[0] || ''
+          : prev.district);
+
+      return {
+        ...prev,
+        nameNe: p.name_ne || prev.nameNe,
+        nameEn: p.name_en || prev.nameEn,
+        registrationNumber: p.registration_number || prev.registrationNumber,
+        registrationAuthority: p.registration_authority || prev.registrationAuthority,
+        ...(syncedAd ? { registrationDateAd: syncedAd } : {}),
+        ...(syncedBs ? { registrationDateBs: syncedBs } : {}),
+        cooperativeType: p.cooperative_type || prev.cooperativeType,
+        panVatNumber: p.pan_vat_number || prev.panVatNumber,
+        province: nextProvince,
+        district: nextDistrict,
+        municipality: p.municipality || prev.municipality,
+        wardNumber: p.ward_number || prev.wardNumber,
+        toleAddress: p.tole_address || prev.toleAddress,
+        contactEmail: isBuyerUpgrade ? prev.contactEmail || p.contact_email : p.contact_email || prev.contactEmail,
+        contactPhone: isBuyerUpgrade ? prev.contactPhone || p.contact_phone : p.contact_phone || prev.contactPhone,
+        authorizedRepName: p.authorized_rep_name || prev.authorizedRepName,
+        authorizedRepDesignation: p.authorized_rep_designation || prev.authorizedRepDesignation,
+        requestedStoreName: p.requested_store_name || prev.requestedStoreName,
+        requestedSlug: p.requested_slug || prev.requestedSlug,
+      };
+    });
+
+    if (p.research_summary || (Array.isArray(p.sources) && p.sources.length > 0)) {
+      setAiResearchInfo({
+        summary: p.research_summary || '',
+        sources: Array.isArray(p.sources) ? p.sources : [],
+      });
+    }
+
     toast.success(
       lang === 'ne'
-        ? 'AI बाट चरण १, २ र ३ का विवरण स्वतः भरिए! कृपया एकपटक जाँच गर्नुहोस्।'
-        : 'AI prefilled fields across Steps 1–3! Please verify before submitting.'
+        ? 'AI ले इन्टरनेटमा खोजेर भेटिएका विवरणहरू फारममा स्वतः भरेको छ! कृपया एकपटक जाँच गर्नुहोस्।'
+        : 'AI researched your cooperative online and auto-filled discovered details! Please verify.'
     );
   };
 
@@ -342,22 +400,31 @@ export function RegisterCooperativePage() {
                   <Sparkles className="w-4 h-4 text-[#B91C1C]" />
                   <span>
                     {lang === 'ne'
-                      ? 'छिटो दर्ता: AI बाट फारम स्वतः भर्नुहोस् (AI Smart Prefill)'
-                      : 'Fast Track: Auto-Fill Form with AI'}
+                      ? 'छिटो दर्ता: AI बाट इन्टरनेट खोजेर फारम स्वतः भर्नुहोस्'
+                      : 'Fast Track: Research Online & Auto-Fill with AI'}
                   </span>
                 </div>
-                <span className="text-[11px] text-[#78716C]">
-                  {lang === 'ne' ? 'नेपाली + अंग्रेजी एकैसाथ भरिन्छ' : 'Auto-fills Nepali, English, Province & Slug'}
+                <span className="text-[11px] text-[#78716C] flex items-center gap-1">
+                  <Globe className="w-3 h-3 text-[#B91C1C]" />
+                  {lang === 'ne'
+                    ? 'वेब खोज + नेपाली / अंग्रेजी एकैसाथ भरिन्छ'
+                    : 'Web Research + Bilingual Auto-Fill'}
                 </span>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
                 <Input
                   value={aiHint}
                   onChange={(e) => setAiHint(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAiPrefillCoop();
+                    }
+                  }}
                   placeholder={
                     lang === 'ne'
-                      ? 'जस्तै: "इलाम सूर्योदय चिया कृषि सहकारी संस्था, फिक्कल"'
-                      : 'e.g. "Suryodaya Tea Agriculture Coop, Fikkal, Ilam"'
+                      ? 'सहकारीको नाम र जिल्ला लेख्नुहोस् (जस्तै: Sunaulo Mahila Bahudeshya Sahakari Sanstha Bardiya)'
+                      : 'Enter cooperative name & district (e.g. Sunaulo Mahila Bahudeshya Sahakari Sanstha Bardiya)'
                   }
                   className="bg-white flex-1"
                 />
@@ -371,13 +438,40 @@ export function RegisterCooperativePage() {
                   <Sparkles className="w-3.5 h-3.5" />
                   {aiPrefilling
                     ? lang === 'ne'
-                      ? 'AI भर्दैछ...'
-                      : 'Prefilling...'
+                      ? 'खोजेर भर्दैछ...'
+                      : 'Researching...'
                     : lang === 'ne'
-                    ? 'AI बाट भर्नुहोस्'
-                    : 'AI Prefill'}
+                    ? 'AI बाट खोजेर भर्नुहोस्'
+                    : 'Research & Auto-Fill'}
                 </Button>
               </div>
+              {aiResearchInfo && (
+                <div className="rounded-lg bg-white border border-[#E5E2DC] p-2.5 space-y-1.5 text-xs">
+                  {aiResearchInfo.summary && (
+                    <p className="text-[#44403C] leading-relaxed">{aiResearchInfo.summary}</p>
+                  )}
+                  {aiResearchInfo.sources.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      <span className="text-[11px] font-medium text-[#78716C]">
+                        {lang === 'ne' ? 'स्रोतहरू:' : 'Sources:'}
+                      </span>
+                      {aiResearchInfo.sources.map((src, idx) => (
+                        <a
+                          key={`${src.url}-${idx}`}
+                          href={src.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] text-[#B91C1C] hover:underline bg-[#FAF9F6] border border-[#E5E2DC] rounded px-1.5 py-0.5 max-w-[220px] truncate"
+                          title={src.title}
+                        >
+                          <span className="truncate">{src.title}</span>
+                          <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E2DC] px-3 py-2 text-xs text-[#57534E]">

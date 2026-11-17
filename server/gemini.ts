@@ -476,18 +476,33 @@ STRICT ACCURACY & SAFETY RULES:
   };
 }
 
+export interface AiCoopPrefillSource {
+  title: string;
+  url: string;
+}
+
 export interface AiCoopPrefillResult {
   name_ne: string;
   name_en: string;
-  cooperative_type: string;
+  registration_number: string;
   registration_authority: string;
+  registration_date_ad: string;
+  registration_date_bs: string;
+  cooperative_type: string;
+  pan_vat_number: string;
   province: string;
   district: string;
   municipality: string;
+  ward_number: string;
   tole_address: string;
+  contact_email: string;
+  contact_phone: string;
+  authorized_rep_name: string;
   authorized_rep_designation: string;
   requested_store_name: string;
   requested_slug: string;
+  research_summary: string;
+  sources: AiCoopPrefillSource[];
 }
 
 const NEPAL_PROVINCE_DISTRICTS: Record<string, string[]> = {
@@ -500,38 +515,182 @@ const NEPAL_PROVINCE_DISTRICTS: Record<string, string[]> = {
   'सुदूरपश्चिम प्रदेश': ['कैलाली', 'कञ्चनपुर', 'डडेल्धुरा', 'डोटी', 'अछाम', 'बाजुरा', 'बझाङ', 'बैतडी', 'दार्चुला'],
 };
 
+function resolveProvinceAndDistrict(rawProv: string, rawDist: string): { province: string; district: string } {
+  const cleanProv = rawProv.trim();
+  const cleanDist = rawDist.trim();
+
+  if (cleanProv && Object.prototype.hasOwnProperty.call(NEPAL_PROVINCE_DISTRICTS, cleanProv)) {
+    const validDistrict = NEPAL_PROVINCE_DISTRICTS[cleanProv].includes(cleanDist) ? cleanDist : '';
+    return { province: cleanProv, district: validDistrict };
+  }
+
+  if (cleanDist) {
+    for (const [prov, dists] of Object.entries(NEPAL_PROVINCE_DISTRICTS)) {
+      if (dists.includes(cleanDist)) {
+        return { province: prov, district: cleanDist };
+      }
+    }
+  }
+
+  return { province: '', district: '' };
+}
+
 const coopPrefillSchema: Schema = {
   type: Type.OBJECT,
   properties: {
-    name_ne: { type: Type.STRING, description: 'Full cooperative name in Nepali Devanagari.' },
-    name_en: { type: Type.STRING, description: 'Full cooperative name in English.' },
+    name_ne: { type: Type.STRING, description: 'Full official cooperative name in Nepali Devanagari.' },
+    name_en: { type: Type.STRING, description: 'Full official cooperative name in English.' },
+    registration_number: {
+      type: Type.STRING,
+      description: 'Official registration number ONLY if explicitly found in search results or user input, else empty string "".',
+    },
+    registration_authority: {
+      type: Type.STRING,
+      description: 'Registration authority in Nepali (discovered from research, or appropriate Nepali office like डिभिजन सहकारी कार्यालय / स्थानीय तह सहकारी शाखा).',
+    },
+    registration_date_ad: {
+      type: Type.STRING,
+      description: 'Registration date in YYYY-MM-DD AD ONLY if explicitly found in research/input, else empty string "".',
+    },
+    registration_date_bs: {
+      type: Type.STRING,
+      description: 'Registration date in YYYY-MM-DD BS (ASCII digits e.g. 2068-04-12) ONLY if explicitly found in research/input, else empty string "".',
+    },
     cooperative_type: {
       type: Type.STRING,
       description: 'One of: agriculture, dairy, multipurpose, handicraft, consumer, savings_credit_producer, other.',
     },
-    registration_authority: { type: Type.STRING, description: 'Likely registration authority in Nepali.' },
+    pan_vat_number: {
+      type: Type.STRING,
+      description: 'PAN or VAT number ONLY if explicitly found in research/input, else empty string "".',
+    },
     province: { type: Type.STRING, description: 'Exact Nepali province key if known/inferred, else empty string.' },
     district: { type: Type.STRING, description: 'Exact Nepali district name inside that province, else empty string.' },
-    municipality: { type: Type.STRING, description: 'Municipality or Rural Municipality name in Nepali if provided/clear, else empty string.' },
-    tole_address: { type: Type.STRING, description: 'Tole/street locality in Nepali if mentioned, else empty string.' },
-    authorized_rep_designation: { type: Type.STRING, description: 'Representative designation in Nepali e.g. अध्यक्ष or व्यवस्थापक.' },
+    municipality: {
+      type: Type.STRING,
+      description: 'Municipality or Rural Municipality name in Nepali (e.g. गुलरिया नगरपालिका) if found in research or user hint, else empty string.',
+    },
+    ward_number: {
+      type: Type.STRING,
+      description: 'Ward number (digits e.g. 5) ONLY if explicitly found in research or user hint, else empty string.',
+    },
+    tole_address: {
+      type: Type.STRING,
+      description: 'Tole/street/locality in Nepali if found in research or user hint, else empty string.',
+    },
+    contact_email: {
+      type: Type.STRING,
+      description: 'Official cooperative email ONLY if explicitly found in research/input, else empty string.',
+    },
+    contact_phone: {
+      type: Type.STRING,
+      description: 'Official Nepal phone/mobile number ONLY if explicitly found in research/input, else empty string.',
+    },
+    authorized_rep_name: {
+      type: Type.STRING,
+      description: 'Chairperson/Manager/Secretary full name in Nepali ONLY if explicitly found in research/input, else empty string.',
+    },
+    authorized_rep_designation: {
+      type: Type.STRING,
+      description: 'Representative designation in Nepali e.g. अध्यक्ष or व्यवस्थापक.',
+    },
     requested_store_name: { type: Type.STRING, description: 'Customer-facing store name in Nepali.' },
     requested_slug: { type: Type.STRING, description: 'Clean URL slug using lowercase a-z, digits, hyphens only.' },
+    research_summary: {
+      type: Type.STRING,
+      description: 'Concise 1-2 sentence summary in requested UI language stating what public cooperative details were found online and what must be filled/verified manually.',
+    },
   },
   required: [
     'name_ne',
     'name_en',
-    'cooperative_type',
+    'registration_number',
     'registration_authority',
+    'registration_date_ad',
+    'registration_date_bs',
+    'cooperative_type',
+    'pan_vat_number',
     'province',
     'district',
     'municipality',
+    'ward_number',
     'tole_address',
+    'contact_email',
+    'contact_phone',
+    'authorized_rep_name',
     'authorized_rep_designation',
     'requested_store_name',
     'requested_slug',
+    'research_summary',
   ],
 };
+
+async function researchCooperativeOnline(hint: string): Promise<{
+  researchNotes: string;
+  sources: AiCoopPrefillSource[];
+}> {
+  const { ai, model } = createGeminiClient();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model,
+        contents: `Search the internet thoroughly for this Nepali cooperative: "${hint}".
+Look for any publicly available official records, municipality cooperative lists, Department of Cooperatives (deoc.gov.np) records, news articles, directories, or official social pages/websites.
+Report ONLY factual details explicitly observed in search results (write "Not found" for anything unavailable — NEVER guess numbers or names):
+- Official Nepali Name & English Name
+- Registration Number (दर्ता नं.) & Registration Date (BS / AD)
+- Registration Authority (दर्ता गर्ने निकाय)
+- Cooperative Type (Bahudeshya/Multipurpose, Krishi/Agriculture, Dugdha/Dairy, Bachat/Savings, Handicraft, Consumer, etc.)
+- PAN / VAT Number
+- Province, District, Municipality / Rural Municipality (नगरपालिका / गाउँपालिका), Ward No., Tole / Address
+- Public Contact Phone / Mobile & Official Email
+- Chairperson (अध्यक्ष), Manager (व्यवस्थापक), or Authorized Representative Name & Designation
+- Products, services, or store focus if mentioned.`,
+        config: {
+          systemInstruction:
+            'You are a careful Nepal cooperative registry researcher. Always use Google Search to look up the requested Nepali cooperative and report strictly verified facts found in search results without inventing any IDs, phone numbers, ward numbers, emails, or personal names.',
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new GeminiAssistantError(
+              'AI_TIMEOUT',
+              'AI प्रतिक्रिया समय समाप्त भयो। कृपया पुनः प्रयास वा म्यानुअल प्रविष्टि गर्नुहोस्।',
+              504
+            )
+          );
+        }, 30_000);
+      }),
+    ]);
+
+    const researchNotes = (response.text ?? '').trim();
+    const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    const seenUrls = new Set<string>();
+    const sources: AiCoopPrefillSource[] = [];
+
+    if (Array.isArray(rawChunks)) {
+      for (const chunk of rawChunks) {
+        const uri = chunk?.web?.uri ? String(chunk.web.uri).trim() : '';
+        if (!uri || seenUrls.has(uri)) continue;
+        seenUrls.add(uri);
+        const title = chunk?.web?.title ? String(chunk.web.title).trim() : uri;
+        sources.push({ title: title || 'Web Source', url: uri });
+        if (sources.length >= 5) break;
+      }
+    }
+
+    return { researchNotes, sources };
+  } catch (err) {
+    throw mapGeminiRuntimeError(err, model);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export async function prefillCooperativeRegistrationWithGemini(input: {
   hint: string;
@@ -541,18 +700,28 @@ export async function prefillCooperativeRegistrationWithGemini(input: {
     .map(([p, ds]) => `${p}: ${ds.join(', ')}`)
     .join('\n');
 
-  const systemInstruction = `You help Nepali cooperatives prefill registration forms accurately from a short user hint (e.g. "Ilam Tea Agriculture Coop Suryodaya" or "सगरमाथा दुग्ध सहकारी काभ्रे").
-RULES:
-- Translate/transliterate faithfully between Nepali Devanagari and English.
-- Pick cooperative_type ONLY from: agriculture, dairy, multipurpose, handicraft, consumer, savings_credit_producer, other.
-- If a district or municipality is mentioned/implied, pick the EXACT Nepali province key and EXACT Nepali district name from this list:\n${locationGuide}
-- If municipality or tole is not mentioned, return empty string "" (never invent fake street numbers or ward numbers).
-- Suggest an appropriate Nepali registration_authority (e.g. स्थानीय तह सहकारी शाखा or डिभिजन सहकारी कार्यालय) and designation (अध्यक्ष / व्यवस्थापक).
-- Produce a clean lowercase hyphenated requested_slug using only a-z, 0-9, hyphens.`;
+  const { researchNotes, sources } = await researchCooperativeOnline(input.hint);
+
+  const systemInstruction = `You extract and structure Nepali cooperative registration details from both the user's input and Google Search web research notes.
+STRICT ACCURACY RULES:
+1. Translate/transliterate faithfully between Nepali Devanagari and English for name_ne, name_en, and requested_store_name.
+2. NEVER invent, guess, or fabricate registration_number, registration_date_ad, registration_date_bs, pan_vat_number, ward_number, contact_email, contact_phone, or authorized_rep_name. Populate those fields ONLY if explicitly stated in the user input or the Google Search research notes below; otherwise return "".
+3. Pick cooperative_type ONLY from: agriculture, dairy, multipurpose, handicraft, consumer, savings_credit_producer, other. (Note: "Bahudeshya" / "बहुउद्देश्यीय" => "multipurpose", "Krishi" / "कृषि" => "agriculture", "Dugdha" / "दुग्ध" => "dairy", "Bachat" / "बचत तथा ऋण" => "savings_credit_producer").
+4. Pick the EXACT Nepali province key and EXACT Nepali district name from this list:\n${locationGuide}
+5. Populate municipality and tole_address from research notes or user hint (return "" if neither mentions them).
+6. For registration_authority: use the researched authority if found, otherwise suggest the standard Nepali authority for that locality (e.g. डिभिजन सहकारी कार्यालय / स्थानीय तह सहकारी शाखा).
+7. Produce a clean lowercase hyphenated requested_slug using only a-z, 0-9, hyphens.
+8. Write research_summary in ${input.language === 'en' ? 'English' : 'Nepali'} clearly summarizing what online information was found vs what still needs manual entry/verification.`;
+
+  const userPrompt = [
+    `Preferred UI language: ${input.language}`,
+    `User Cooperative Input / Hint:\n${input.hint}`,
+    `Web Research Findings (Google Search Grounding):\n${researchNotes || 'No detailed web records found.'}`,
+  ].join('\n\n');
 
   const { parsed } = await runStructuredGeminiPrompt<Record<string, unknown>>({
     systemInstruction,
-    userPrompt: `Preferred UI language: ${input.language}\nCooperative description / hint:\n${input.hint}`,
+    userPrompt,
     responseSchema: coopPrefillSchema,
     timeoutMs: 25_000,
   });
@@ -560,10 +729,10 @@ RULES:
   const allowedTypes = ['agriculture', 'dairy', 'multipurpose', 'handicraft', 'consumer', 'savings_credit_producer', 'other'];
   const coopType = allowedTypes.includes(String(parsed.cooperative_type || '')) ? String(parsed.cooperative_type) : 'multipurpose';
 
-  const rawProv = String(parsed.province || '').trim();
-  const province = Object.prototype.hasOwnProperty.call(NEPAL_PROVINCE_DISTRICTS, rawProv) ? rawProv : '';
-  const rawDistrict = String(parsed.district || '').trim();
-  const district = province && NEPAL_PROVINCE_DISTRICTS[province].includes(rawDistrict) ? rawDistrict : '';
+  const { province, district } = resolveProvinceAndDistrict(
+    String(parsed.province || ''),
+    String(parsed.district || '')
+  );
 
   const slug = String(parsed.requested_slug || '')
     .toLowerCase()
@@ -571,18 +740,47 @@ RULES:
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
 
+  const rawDateAd = String(parsed.registration_date_ad || '').trim();
+  const registration_date_ad = /^\d{4}-\d{2}-\d{2}$/.test(rawDateAd) ? rawDateAd : '';
+
+  const rawDateBs = String(parsed.registration_date_bs || '').trim();
+  const registration_date_bs = /^\d{4}-\d{2}-\d{2}$/.test(rawDateBs) ? rawDateBs : '';
+
+  const rawEmail = String(parsed.contact_email || '').trim().toLowerCase();
+  const contact_email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail) ? rawEmail : '';
+
+  const rawPhoneDigits = String(parsed.contact_phone || '').replace(/[^0-9]/g, '');
+  let contact_phone = '';
+  if (rawPhoneDigits.length === 13 && rawPhoneDigits.startsWith('977')) {
+    contact_phone = rawPhoneDigits.slice(3);
+  } else if (rawPhoneDigits.length >= 9 && rawPhoneDigits.length <= 10) {
+    contact_phone = rawPhoneDigits;
+  }
+
+  const rawWard = String(parsed.ward_number || '').replace(/[^0-9]/g, '').slice(0, 3);
+
   return {
     name_ne: String(parsed.name_ne || '').trim(),
     name_en: String(parsed.name_en || '').trim(),
-    cooperative_type: coopType,
+    registration_number: String(parsed.registration_number || '').trim(),
     registration_authority: String(parsed.registration_authority || '').trim(),
+    registration_date_ad,
+    registration_date_bs,
+    cooperative_type: coopType,
+    pan_vat_number: String(parsed.pan_vat_number || '').replace(/[^0-9A-Za-z-]/g, '').trim(),
     province,
     district,
     municipality: String(parsed.municipality || '').trim(),
+    ward_number: rawWard,
     tole_address: String(parsed.tole_address || '').trim(),
+    contact_email,
+    contact_phone,
+    authorized_rep_name: String(parsed.authorized_rep_name || '').trim(),
     authorized_rep_designation: String(parsed.authorized_rep_designation || '').trim() || 'अध्यक्ष',
     requested_store_name: String(parsed.requested_store_name || '').trim(),
     requested_slug: slug,
+    research_summary: String(parsed.research_summary || '').trim(),
+    sources,
   };
 }
 

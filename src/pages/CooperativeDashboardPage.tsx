@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { apiFetch } from '../lib/utils';
-import { formatDateBS, formatNPR, toNepaliDigits } from '../lib/bs-date';
+import { formatDateBS, formatDateTimeBS, formatNPR, toNepaliDigits } from '../lib/bs-date';
 import { labelFor, STATUS_LABELS } from '../lib/i18n';
 import { optimizeImageFileToDataUrl } from '../lib/image-upload';
 import { Input, Select, Textarea } from '../components/ui/input';
@@ -2333,23 +2333,41 @@ export function CooperativeDashboardPage() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-[#E5E2DC] text-left text-[#78716C]">
-                    <th className="py-2">SKU</th>
-                    <th className="py-2">{lang === 'ne' ? 'प्रकार' : 'Type'}</th>
-                    <th className="py-2 text-right">{lang === 'ne' ? 'परिवर्तन' : 'Delta'}</th>
-                    <th className="py-2 text-right">{lang === 'ne' ? 'नयाँ स्टक' : 'New Qty'}</th>
+                    <th className="py-2 pr-3">{lang === 'ne' ? 'मिति र समय' : 'Date & Time'}</th>
+                    <th className="py-2 pr-3">SKU</th>
+                    <th className="py-2 pr-3">{lang === 'ne' ? 'प्रकार' : 'Type'}</th>
+                    <th className="py-2 pr-3 text-right">{lang === 'ne' ? 'परिवर्तन' : 'Delta'}</th>
+                    <th className="py-2 pr-3 text-right">{lang === 'ne' ? 'नयाँ स्टक' : 'New Qty'}</th>
                     <th className="py-2">{lang === 'ne' ? 'टिप्पणी' : 'Note'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F3F1EC]">
-                  {movements.map((m) => (
-                    <tr key={String(m.id)}>
-                      <td className="py-2 font-mono">{String(m.sku)}</td>
-                      <td className="py-2">{String(m.movement_type)}</td>
-                      <td className="py-2 text-right tabular-nums">{String(m.quantity_delta)}</td>
-                      <td className="py-2 text-right tabular-nums font-semibold">{String(m.new_quantity)}</td>
-                      <td className="py-2 text-[#57534E]">{String(m.note || '')}</td>
+                  {movements.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-6 text-center text-[#78716C]">
+                        {lang === 'ne' ? 'कुनै स्टक आवागमन इतिहास फेला परेन।' : 'No stock movement history found.'}
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    movements.map((m) => {
+                      const createdAt = m.created_at ? String(m.created_at) : '';
+                      const adTimeLabel = createdAt
+                        ? new Date(createdAt).toLocaleString('en-US', { timeZone: 'Asia/Kathmandu' })
+                        : '';
+                      return (
+                        <tr key={String(m.id)}>
+                          <td className="py-2 pr-3 whitespace-nowrap text-[#57534E]" title={adTimeLabel}>
+                            {createdAt ? formatDateTimeBS(createdAt, lang) : '—'}
+                          </td>
+                          <td className="py-2 pr-3 font-mono">{String(m.sku)}</td>
+                          <td className="py-2 pr-3">{String(m.movement_type)}</td>
+                          <td className="py-2 pr-3 text-right tabular-nums">{String(m.quantity_delta)}</td>
+                          <td className="py-2 pr-3 text-right tabular-nums font-semibold">{String(m.new_quantity)}</td>
+                          <td className="py-2 text-[#57534E]">{String(m.note || '')}</td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
