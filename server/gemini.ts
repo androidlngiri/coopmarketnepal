@@ -7,6 +7,10 @@ export function getGeminiModel(): string {
   return configured && configured.length > 0 ? configured : DEFAULT_GEMINI_MODEL;
 }
 
+function getThinkingLevelForModel(model: string): ThinkingLevel {
+  return model.includes('flash-lite') ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
+}
+
 export function isGeminiConfigured(): boolean {
   return Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0);
 }
@@ -324,6 +328,7 @@ function mapGeminiRuntimeError(err: unknown, model: string): GeminiAssistantErro
 
   const status = (err as { status?: number })?.status;
   const msg = err instanceof Error ? err.message : String(err);
+  console.error('[Gemini Error]', { model, status: status ?? null, message: msg.slice(0, 350) });
 
   if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg)) {
     return new GeminiAssistantError(
@@ -373,7 +378,7 @@ async function runStructuredGeminiPrompt<T>(params: {
           systemInstruction: params.systemInstruction,
           responseMimeType: 'application/json',
           responseSchema: params.responseSchema,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          thinkingConfig: { thinkingLevel: getThinkingLevelForModel(model) },
         },
       }),
       new Promise<never>((_resolve, reject) => {
@@ -705,7 +710,7 @@ STRICT ACCURACY RULES:
           systemInstruction:
             'You are a careful Nepal cooperative registry researcher. Use Google Search grounding to look up the requested Nepali cooperative and output strictly valid JSON with verified facts only.',
           tools: [{ googleSearch: {} }],
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          thinkingConfig: { thinkingLevel: getThinkingLevelForModel(model) },
         },
       }),
       new Promise<never>((_resolve, reject) => {
@@ -717,7 +722,7 @@ STRICT ACCURACY RULES:
               504
             )
           );
-        }, 30_000);
+        }, 20_000);
       }),
     ]);
 
